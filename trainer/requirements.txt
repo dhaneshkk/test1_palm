@@ -1,0 +1,11 @@
+torch
+torchvision
+onnx
+onnxscript
+onnxruntime
+opencv-python-headless
+numpy
+loguru
+thop
+tabulate
+scipy

@@ -98,3 +98,51 @@ mod tests {
         assert!(!closer(0.3, 0.4, 0.3, 0.4)); // closerRel_irrefl instance
     }
 }
+
+/// Web-app job phases (Lean §6 encodes them as Nat 0..6 in this order).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub enum Phase {
+    Idle = 0,
+    Collecting = 1,
+    Collected = 2,
+    Training = 3,
+    Calibrating = 4,
+    Ready = 5,
+    Failed = 6,
+}
+
+pub const PHASES: [Phase; 7] = [Phase::Idle, Phase::Collecting, Phase::Collected, Phase::Training, Phase::Calibrating, Phase::Ready, Phase::Failed];
+
+/// Lean: `canTransition a b` (§6). Collection can (re)start when nothing is training;
+/// training needs collected data (or a previous model / failed run to retry from);
+/// the live model is swapped only on Calibrating → Ready.
+pub fn can_transition(a: Phase, b: Phase) -> bool {
+    use Phase::*;
+    matches!(
+        (a, b),
+        (Idle | Collected | Ready | Failed, Collecting)
+            | (Collecting, Collected)
+            | (Collected | Ready | Failed, Training)
+            | (Training, Calibrating)
+            | (Calibrating, Ready)
+            | (Collecting | Training | Calibrating, Failed)
+    )
+}
+
+#[cfg(test)]
+mod phase_tests {
+    use super::*;
+    #[test]
+    fn phase_theorems_exhaustive() {
+        for a in PHASES {
+            // swap_requires_calibrated
+            if can_transition(a, Phase::Ready) { assert_eq!(a, Phase::Calibrating); }
+            // training_requires_data
+            if can_transition(a, Phase::Training) { assert!(matches!(a, Phase::Collected | Phase::Ready | Phase::Failed)); }
+            // no_self_loops
+            assert!(!can_transition(a, a));
+        }
+        assert!(!can_transition(Phase::Training, Phase::Ready)); // no_skip_calibration
+        assert!(!can_transition(Phase::Training, Phase::Collecting)); // collection_waits_for_training
+    }
+}

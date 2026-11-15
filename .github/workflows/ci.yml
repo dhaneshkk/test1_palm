@@ -20,8 +20,12 @@ jobs:
           pip install opencv-python-headless numpy
           BOX=$(python -c 'import json;print(",".join(map(str,json.load(open("tests/fixtures/meta.json"))["box"])))')
           python tools/make_fixtures.py tests/fixtures/gray.png "$BOX" tests/fixtures/test_model_int8.onnx tests/fixtures
-      - run: cargo build --release
-      - run: cargo test --release -- --nocapture
+      - run: cargo build --release --workspace          # includes web/ (Topcoat 0.12 needs Rust ≥ 1.99)
+      - run: cargo test --release --workspace -- --nocapture
+      - name: Topcoat asset bundle builds
+        run: |
+          cargo install topcoat-cli --version 0.12.1 --locked
+          topcoat asset bundle -p palmid-web --release
 
   lean:
     runs-on: ubuntu-latest
@@ -31,7 +35,7 @@ jobs:
         run: |
           curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | bash -s -- -y --default-toolchain leanprover/lean4:v4.31.0
           ~/.elan/bin/lean lean/PalmID.lean
-          for t in absDiff_symm angDist_symm angDist_self angDist_le_three total_le accept_monotone min_accept closerRel_irrefl conformal_feasible conformal_tight step_bounded step_lipschitz run_le announce_needs_K_frames gate_cells; do echo "#print axioms $t"; done > /tmp/ax.lean
+          for t in absDiff_symm angDist_symm angDist_self angDist_le_three total_le accept_monotone min_accept closerRel_irrefl conformal_feasible conformal_tight step_bounded step_lipschitz run_le announce_needs_K_frames gate_cells swap_requires_calibrated training_requires_data no_skip_calibration collection_waits_for_training no_self_loops; do echo "#print axioms $t"; done > /tmp/ax.lean
           cat lean/PalmID.lean /tmp/ax.lean > /tmp/check.lean
           ~/.elan/bin/lean /tmp/check.lean | tee /tmp/axioms.txt
           ! grep -q sorryAx /tmp/axioms.txt

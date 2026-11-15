@@ -76,9 +76,65 @@ curl -s localhost:8361/v1/chat/completions -H 'content-type: application/json' -
 `choices[0].message.content` is a JSON string: per object `class`, `score`, `bbox`, and for palms
 `identity` (`name` / `unknown` / `pending` until 3 of the last 6 frames agree) plus per-person distances.
 
+## Web app (Topcoat): training and inference with live status
+
+`web/` is a [Topcoat](https://github.com/tokio-rs/topcoat) app that runs the whole pipeline in one
+page. The camera feed and every status panel update live over Topcoat's runtime WebSocket.
+
+![palmid web dashboard: live monochrome feed, pipeline phase, training loss chart, per-class τ and MCC, trainer log](docs/web-dashboard.png)
+
+*(The boxes and FPS text inside this frame are baked into the opencv_zoo demo clip used as a stand-in camera.)*
+
+```
+ browser ◄──── live regions (WebSocket) ──── palmid-web (Rust, Topcoat 0.12)
+   │  buttons = Topcoat procedures             │
+   │                                            ├─ camera thread: ffmpeg → RGB frame → mode
+   ▼                                            │    infer   → INT8 student + palmprint ID
+ 1 Collect ─► colour teachers in Rust ─────────►│    collect → YuNet + MediaPipe palm (Rust/ort) → gray PNG + YOLO labels
+ 2 Train   ─► supervised Python child ─────────►│    trainer/train_student.py (SAM) → JSON progress lines → live loss chart
+             (YOLOX needs PyTorch)              │    → Rust: Mondrian split-conformal τ + MCC on val → hot-swap model
+ 3 Enroll  ─► consent checkbox required ───────►│    enroll  → 40 palm codes → conformal τ + chance gate
+                                                └─ POST /v1/chat/completions (same live model)
+```
+
+What updates live: the monochrome feed (about 10 fps to the browser) with face and palm boxes; camera
+fps and frame time; per-frame detections and identities; collection progress with per-split counts;
+trainer epoch, iteration, loss, learning rate and a loss chart; the trainer log; per-class τ and MCC
+after calibration; enrollment progress and the gallery.
+
+The pipeline phase is a checked state machine (`lean_mirror::can_transition`, Lean §6). The live
+detector is replaced only on **Calibrating → Ready** (`swap_requires_calibrated`), so a model whose
+thresholds weren't calibrated never serves.
+
+### Run it
+
+```bash
+# Rust ≥ 1.99 for Topcoat 0.12; onnxruntime + ffmpeg as above
+cargo install topcoat-cli --version 0.12.1 --locked
+pip install -r trainer/requirements.txt        # torch, onnx, onnxruntime, opencv for the trainer
+topcoat asset bundle -p palmid-web --release   # Topcoat's browser runtime
+cargo run -p palmid-web --release              # http://127.0.0.1:3000
+```
+
+| env | default | |
+|---|---|---|
+| `PALMID_SOURCE` | `webcam` | `webcam`, `webcam:/dev/video2`, a video file/URL, or an image folder |
+| `PALMID_WORK` | `palmid_work` | dataset, models, gallery |
+| `PALMID_PYTHON` / `PALMID_TRAINER` | `python3` / `trainer/train_student.py` | training job |
+| `PALMID_YOLOX`, `PALMID_YOLOX_WEIGHTS` | `~/.cache/palmid/…` | cloned / downloaded on first training run |
+| `PALMID_THREADS` | `4` | onnxruntime and torch threads |
+| `HOST` / `PORT` | `127.0.0.1` / `3000` | Topcoat |
+
+Teacher models (YuNet, MediaPipe palm) download from opencv_zoo on the first **Collect**.
+Collection splits frames in interleaved 10-frame blocks (6 train : 2 cal : 2 val), so every split
+covers the whole session. A plain time split once left validation with no palms.
+
+The web UI has no login. Keep it bound to `127.0.0.1` (the default) or put it behind authentication
+before exposing it, because it can enroll and delete people.
+
 ## Formal guarantees and tests
 
-`lean/PalmID.lean`: 15 theorems, Lean 4.31, kernel only (Nat + `omega`, no Mathlib, no `sorry`):
+`lean/PalmID.lean`: 20 theorems, Lean 4.31, kernel only (Nat + `omega`, no Mathlib, no `sorry`):
 
 | § | Theorems | Used by |
 |---|---|---|
@@ -87,6 +143,7 @@ curl -s localhost:8361/v1/chat/completions -H 'content-type: application/json' -
 | 3 | `conformal_feasible`, `conformal_tight` | per-person and per-class τ need ≥ 29 calibration samples at α = 1/30 |
 | 4 | `step_bounded`, `step_lipschitz`, `run_le`, `announce_needs_K_frames` | identity debounce |
 | 5 | `gate_cells` | palm resolution gate |
+| 6 | `swap_requires_calibrated`, `training_requires_data`, `no_skip_calibration`, `collection_waits_for_training`, `no_self_loops` | web-app job phases |
 
 `src/lean_mirror.rs` holds the integer mirrors that the runtime calls, with exhaustive or brute-force
 checks of each theorem statement.
@@ -102,6 +159,8 @@ checks of each theorem statement.
 | CompCode vs notebook | 99.74 % of cells identical, distance 0.0017 |
 | INT8 model output vs onnxruntime-Python | identical (max abs Δ = 0) |
 | decode + NMS vs notebook | identical detections |
+| colour teachers vs OpenCV FaceDetectorYN / notebook palm decode | IoU 1.0000 (local; needs teacher models) |
+| RGB→gray vs `cvtColor` | identical over all 2²⁴ colours |
 | enrollment / identification (synthetic palm-line images) | 20/20 genuine accepted ×2, 0/20 unenrolled accepted, noise refused |
 
 Model tests need `ORT_DYLIB_PATH`; they are skipped without it. `tests/fixtures/test_model_int8.onnx`

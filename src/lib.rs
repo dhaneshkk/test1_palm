@@ -14,6 +14,8 @@ pub mod lean_mirror;
 pub mod metrics;
 pub mod palmprint;
 pub mod server;
+pub mod teachers;
+pub mod dataset;
 pub mod camera;
 
 pub use detector::{Detection, Detector, ModelMeta};

@@ -1,0 +1,18 @@
+[package]
+name = "palmid-web"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"          # Topcoat 0.12
+description = "Topcoat web app for palmid: collect → train (SAM) → calibrate → live inference, with live status"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+palmid = { path = ".." }
+topcoat = "0.12.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+anyhow = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

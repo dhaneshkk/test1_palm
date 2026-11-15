@@ -82,3 +82,26 @@ theorem announce_needs_K_frames (N K : Nat) (bs : List Bool) (h : K ≤ run N 0 
 --     code grid cells = side / stride, so the gate guarantees ≥ minSide/stride cells per axis.
 theorem gate_cells (side minSide stride : Nat) (h : minSide ≤ side) :
     minSide / stride ≤ side / stride := Nat.div_le_div_right h
+
+-- §6 Web-app job phases: Idle 0, Collecting 1, Collected 2, Training 3, Calibrating 4, Ready 5, Failed 6.
+def canTransition : Nat → Nat → Bool
+  | 0, 1 | 2, 1 | 5, 1 | 6, 1 => true          -- (re)start collection when nothing is training
+  | 1, 2 => true                                -- collection finished
+  | 2, 3 | 5, 3 | 6, 3 => true                  -- train from collected data / retrain / retry
+  | 3, 4 => true                                -- training done → calibrate
+  | 4, 5 => true                                -- calibrated → model goes live
+  | 1, 6 | 3, 6 | 4, 6 => true                  -- failure or cancel while a job runs
+  | _, _ => false
+
+/-- The live detector is replaced only on Calibrating → Ready: an uncalibrated model never goes live. -/
+theorem swap_requires_calibrated (a : Nat) (h : canTransition a 5 = true) : a = 4 := by
+  rcases a with _ | _ | _ | _ | _ | _ | _ | a <;> simp_all [canTransition]
+
+/-- Training starts only from collected data, a previous model, or a failed run. -/
+theorem training_requires_data (a : Nat) (h : canTransition a 3 = true) : a = 2 ∨ a = 5 ∨ a = 6 := by
+  rcases a with _ | _ | _ | _ | _ | _ | _ | a <;> simp_all [canTransition]
+
+theorem no_skip_calibration : canTransition 3 5 = false := by decide
+theorem collection_waits_for_training : canTransition 3 1 = false ∧ canTransition 4 1 = false := by decide
+theorem no_self_loops (a : Nat) : canTransition a a = false := by
+  rcases a with _ | _ | _ | _ | _ | _ | _ | a <;> simp [canTransition]
