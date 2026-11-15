@@ -1,0 +1,30 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: onnxruntime shared library (for load-dynamic)
+        run: |
+          pip install onnxruntime
+          echo "ORT_DYLIB_PATH=$(python -c "import onnxruntime,os,glob;print(glob.glob(os.path.dirname(onnxruntime.__file__)+'/capi/libonnxruntime.so*')[0])")" >> "$GITHUB_ENV"
+      - run: cargo build --release
+      - run: cargo test --release -- --nocapture
+
+  lean:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lean 4.31 (kernel-only, no Mathlib)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | bash -s -- -y --default-toolchain leanprover/lean4:v4.31.0
+          ~/.elan/bin/lean lean/PalmID.lean
+          for t in absDiff_symm angDist_symm angDist_self angDist_le_three total_le accept_monotone min_accept closerRel_irrefl conformal_feasible conformal_tight step_bounded step_lipschitz run_le announce_needs_K_frames gate_cells; do echo "#print axioms $t"; done > /tmp/ax.lean
+          cat lean/PalmID.lean /tmp/ax.lean > /tmp/check.lean
+          ~/.elan/bin/lean /tmp/check.lean | tee /tmp/axioms.txt
+          ! grep -q sorryAx /tmp/axioms.txt

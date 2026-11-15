@@ -1,0 +1,36 @@
+[package]
+name = "palmid"
+version = "0.1.0"
+edition = "2021"
+description = "Monochrome laptop-camera face + palm detection and consent-based palmprint identification (CPU, INT8 ONNX)"
+license = "Apache-2.0"
+
+[lib]
+name = "palmid"
+path = "src/lib.rs"
+
+[[bin]]
+name = "palmid"
+path = "src/main.rs"
+
+[dependencies]
+# load-dynamic: links libonnxruntime at run time (set ORT_DYLIB_PATH); no binary download at build time
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "ndarray"] }
+ndarray = "0.16"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.test]
+opt-level = 2
