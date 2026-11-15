@@ -111,6 +111,14 @@ fixtures with `tools/make_fixtures.py`.
 Training (SAM, MCC, Mondrian conformal calibration) lives in the notebook. The Rust `eval` and
 `calibrate` commands re-run the MCC and conformal steps on your own labelled data.
 
+### INT8 results depend on the CPU
+
+The same INT8 model and input gave raw outputs up to 3.1 apart on this sandbox's Xeon and on a GitHub
+runner (different onnxruntime INT8 kernels and versions). The final detections matched here, but
+scores near a threshold can flip. **Run `palmid calibrate` on the deployment machine** (for example
+the N100 edge box) so the per-class τ fit the kernels that will actually run. CI regenerates the
+reference fixtures on the runner for the same reason.
+
 ## Measured
 
 On a 2-vCPU Xeon sandbox, release build, 4 threads: about 25–45 ms per 640×480 frame end to end

@@ -13,6 +13,13 @@ jobs:
         run: |
           pip install onnxruntime
           echo "ORT_DYLIB_PATH=$(python -c "import onnxruntime,os,glob;print(glob.glob(os.path.dirname(onnxruntime.__file__)+'/capi/libonnxruntime.so*')[0])")" >> "$GITHUB_ENV"
+      - name: Regenerate reference fixtures on this runner
+        # INT8 onnxruntime kernels differ across CPUs (VNNI vs AVX2) and ORT versions, so the
+        # Rust-vs-Python model check must compare against Python run on the same machine.
+        run: |
+          pip install opencv-python-headless numpy
+          BOX=$(python -c 'import json;print(",".join(map(str,json.load(open("tests/fixtures/meta.json"))["box"])))')
+          python tools/make_fixtures.py tests/fixtures/gray.png "$BOX" tests/fixtures/test_model_int8.onnx tests/fixtures
       - run: cargo build --release
       - run: cargo test --release -- --nocapture
 
