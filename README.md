@@ -49,15 +49,24 @@ See [Limitations](#limitations) before relying on any of it.
 
 ## Quick start: web app
 
-Requirements: Rust ≥ 1.99 (Topcoat 0.12), `ffmpeg`, Python 3 with the trainer requirements.
+Requirements: Rust ≥ 1.99 (Topcoat 0.12), `ffmpeg`, Python 3 with the trainer requirements in a
+virtual environment. Ubuntu 24.04 and Debian 12 refuse system-wide `pip install` (PEP 668).
 
 ```bash
-pip install -r trainer/requirements.txt        # torch, onnx, onnxruntime, opencv, …
-export ORT_DYLIB_PATH=$(python -c "import onnxruntime,os,glob;print(glob.glob(os.path.dirname(onnxruntime.__file__)+'/capi/libonnxruntime.so*')[0])")
+sudo apt install -y python3-venv ffmpeg git curl
+python3 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu   # CPU wheels (~200 MB, not ~2.5 GB CUDA)
+pip install -r trainer/requirements.txt
+export ORT_DYLIB_PATH=$(python3 -c "import onnxruntime,os,glob;print(glob.glob(os.path.dirname(onnxruntime.__file__)+'/capi/libonnxruntime.so*')[0])")
+export PALMID_PYTHON=$PWD/.venv/bin/python3    # the web app runs the trainer with this interpreter
+
 cargo install topcoat-cli --version 0.12.1 --locked
 topcoat asset bundle -p palmid-web --release   # Topcoat's browser runtime
 cargo run -p palmid-web --release              # open http://127.0.0.1:3000
 ```
+
+Re-run `source .venv/bin/activate` and the two `export` lines in each new terminal.
 
 Then in the page:
 
@@ -81,6 +90,31 @@ not by the browser. Run the server on the laptop whose camera you want.
 | `PALMID_YOLOX`, `PALMID_YOLOX_WEIGHTS` | `~/.cache/palmid/…` | YOLOX checkout and COCO weights, fetched on first training run |
 | `PALMID_THREADS` | `4` | onnxruntime and torch threads |
 | `HOST` / `PORT` | `127.0.0.1` / `3000` | Topcoat |
+
+### Windows + WSL2
+
+* **Clone inside the Linux filesystem** (`~/test1_palm`), not under `/mnt/c/…`. Cargo builds and
+  Python imports are many times slower across the Windows drive mount.
+* **Camera:** WSL2 usually has no `/dev/video0`. Check with `ls /dev/video*`. If it's missing,
+  stream the camera from Windows into WSL with ffmpeg on the Windows side
+  (`winget install Gyan.FFmpeg`):
+
+  ```powershell
+  # Windows PowerShell: find the camera name, then serve it on TCP port 5056
+  ffmpeg -list_devices true -f dshow -i dummy
+  ffmpeg -f dshow -video_size 640x480 -framerate 30 -i video="Integrated Camera" `
+         -r 25 -c:v mpeg1video -q:v 4 -f mpegts "tcp://0.0.0.0:5056?listen=1"
+  ```
+
+  ```bash
+  # WSL: the Windows host is the default gateway (NAT networking) or 127.0.0.1 (mirrored networking)
+  export PALMID_SOURCE=tcp://$(ip route show default | awk '{print $3}'):5056
+  cargo run -p palmid-web --release
+  ```
+
+  Allow ffmpeg through the Windows firewall if prompted. The Windows ffmpeg serves one connection, so
+  restart it if palmid-web is restarted. The stream is colour, so the teachers work during **Collect**.
+* Alternatively, run natively on Windows: `PALMID_SOURCE=webcam:<camera name>` uses ffmpeg's dshow input.
 
 ### What the web app is made of
 
@@ -106,7 +140,7 @@ not by the browser. Run the server on the laptop whose camera you want.
 
 ## CLI and API
 
-Requirements: stable Rust, `ffmpeg`, `onnxruntime` (set `ORT_DYLIB_PATH` as above). No OpenCV.
+Requirements: stable Rust, `ffmpeg`, `onnxruntime` (in the venv above; set `ORT_DYLIB_PATH`). No OpenCV.
 
 ```bash
 cargo build --release -p palmid
@@ -131,7 +165,8 @@ $B --model palmid_work/models/palmid_int8.onnx --meta palmid_work/models/palmid_
 ```
 
 `--source` accepts `webcam`, `webcam:/dev/video2`, a video file/URL, or a folder of images.
-Capture uses an `ffmpeg` subprocess (v4l2 on Linux, avfoundation on macOS, dshow on Windows).
+Capture uses an `ffmpeg` subprocess (v4l2 on Linux, avfoundation on macOS, dshow on Windows); any
+ffmpeg input URL also works, e.g. `tcp://host:5056` for a camera streamed from another machine.
 
 ### API (OpenAI-compatible)
 
@@ -151,7 +186,7 @@ distances. A request with no image returns the current status (phase, model, enr
 ## Training without the web app
 
 ```bash
-python trainer/train_student.py --data DATASET --out OUT --epochs 30      # SAM; prints JSON progress
+python3 trainer/train_student.py --data DATASET --out OUT --epochs 30      # SAM; prints JSON progress
 $B --model OUT/palmid_int8.onnx --meta OUT/palmid_model.json calibrate --data DATASET --split cal
 $B --model OUT/palmid_int8.onnx --meta OUT/palmid_model.json eval --data DATASET --split val
 ```
