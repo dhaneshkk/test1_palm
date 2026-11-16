@@ -9,3 +9,5 @@ loguru
 thop
 tabulate
 scipy
+psutil
+tqdm
