@@ -52,6 +52,16 @@ async fn forget(cx: &Cx, name: String) -> Result<String> {
     report(context::<App>(cx).delete_person(name.trim()).map(|had| if had { format!("deleted {} and their codes", name.trim()) } else { format!("{} is not enrolled", name.trim()) }))
 }
 
+#[procedure]
+async fn record_finger(cx: &Cx, label: String) -> Result<String> {
+    report(label.trim().parse::<u8>().map_err(|_| anyhow::anyhow!("number must be 1–10")).and_then(|l| context::<App>(cx).start_finger_recording(l)))
+}
+
+#[procedure]
+async fn score_fingers(cx: &Cx) -> Result<String> {
+    report(context::<App>(cx).score_finger_recordings())
+}
+
 // ── stylesheet (served as a route so CSS needs no escaping) ───────────────────
 pub struct Css;
 impl IntoResponse for Css {
@@ -107,6 +117,7 @@ async fn controls(cx: &Cx) -> Result<impl View> {
     let consent = signal(cx, || false);
     let forget_name = signal(cx, String::new);
     let msg = signal(cx, String::new);
+    let finger = signal(cx, || "1".to_string());
     Ok(view! {
                         <div class="card controls">
                             <h2>"1 · Collect"</h2>
@@ -127,6 +138,12 @@ async fn controls(cx: &Cx) -> Result<impl View> {
                             <button @click=$(async |_e| { let m = enroll(name.get(), consent.get()).await; msg.set(m); })>"Enroll"</button>
                             <label>"forget " <input size="14" :value=$(forget_name.get()) @input=$(|e: Event| forget_name.set(e.target.value))></label>
                             <button class="ghost" @click=$(async |_e| { let m = forget(forget_name.get()).await; msg.set(m); })>"Delete"</button>
+
+                            <h2>"4 · Finger numbers"</h2>
+                            <p class="hint">"To measure the 1–10 rules on your hands: pick a number, press Record and hold that gesture (60 frames with a hand). Record each number you care about, then Score. Saved: landmarks only, in finger_recordings.jsonl."</p>
+                            <label>"number " <input size="3" :value=$(finger.get()) @input=$(|e: Event| finger.set(e.target.value))></label>
+                            <button @click=$(async |_e| { let m = record_finger(finger.get()).await; msg.set(m); })>"Record"</button>
+                            <button class="ghost" @click=$(async |_e| { let m = score_fingers().await; msg.set(m); })>"Score"</button>
                             <p class="msg">$(msg.get())</p>
                         </div>
     })
@@ -200,6 +217,7 @@ async fn status_panels(cx: &Cx, s: Status) -> Result<impl View> {
     let collect_pct = if s.collect.target > 0 { s.collect.frames * 100 / s.collect.target } else { 0 };
     let pts = loss_points(&t.iter_losses);
     let phase_class = format!("phase p{}", t.phase as u8);
+    let fr_counts = (1..=10).filter(|&k| s.finger_rec.counts[k] > 0).map(|k| format!("{k}: {}", s.finger_rec.counts[k])).collect::<Vec<_>>().join(" · ");
     Ok(view! {
         <div class="card">
             <h2>"Camera"</h2>
@@ -213,6 +231,21 @@ async fn status_panels(cx: &Cx, s: Status) -> Result<impl View> {
                 <span>"face mesh"</span><b>(s.face_model.clone().unwrap_or_else(|| "—".into()))</b>
                 <span>"finger number"</span><b class="fingernum">(s.finger_number.map(|v| v.to_string()).unwrap_or_else(|| "—".into()))</b>
             </div>
+            if let Some((l, left)) = s.finger_rec.active { <p class="hint">"recording “" (l) "”: " (left) " frames to go"</p> }
+            if s.finger_rec.counts.iter().any(|&c| c > 0) {
+                <p class="hint">"recorded: " (fr_counts.clone())</p>
+            }
+            if let Some(r) = &s.finger_rec.report {
+                <table>
+                    <tr><th>"number"</th><th>"frames"</th><th>"recall"</th><th>"precision"</th><th>"MCC"</th></tr>
+                    for c in &r.per_class {
+                        <tr><td>(c.label)</td><td>(c.frames)</td><td>(c.recall.map_or("n/a".to_string(), |v| format!("{:.0} %", 100.0 * v)))</td>
+                            <td>(c.precision.map_or("n/a".to_string(), |v| format!("{:.0} %", 100.0 * v)))</td><td><b>(c.mcc.map_or("n/a".to_string(), |v| format!("{v:.3}")))</b></td></tr>
+                    }
+                    <tr><td>"all"</td><td>(r.frames)</td><td>(format!("{:.0} % correct", 100.0 * r.accuracy))</td><td>(format!("{:.0} % no number", 100.0 * r.abstained))</td>
+                        <td><b>(r.mcc.map_or("n/a".to_string(), |v| format!("{v:.3}")))</b></td></tr>
+                </table>
+            }
             if let Some(e) = &s.camera.error { <p class="err">(e.clone())</p> }
             <ul class="objs">
                 for o in &s.objects {

@@ -56,6 +56,9 @@ enum Cmd {
     Delete { #[arg(long)] name: String },
     /// List enrolled people (names and thresholds only)
     List,
+    /// Score Chinese finger-number rules on labelled recordings (JSON lines {label, points}, as the
+    /// web app's "Record" button writes them): accuracy, per-number and multiclass MCC
+    FingersEval { recordings: PathBuf },
     /// Recalibrate per-class τ (Mondrian split-conformal) on a YOLO-format split and rewrite --meta
     Calibrate { #[arg(long)] data: PathBuf, #[arg(long, default_value = "cal")] split: String, #[arg(long, default_value_t = 0.30)] fallback: f32 },
     /// Frame-level MCC per class on a YOLO-format split
@@ -161,6 +164,11 @@ async fn main() -> Result<()> {
         Cmd::Delete { name } => {
             let mut g = Gallery::open(&cli.gallery, GalleryConfig::default())?;
             println!("{}", if g.delete(name)? { format!("deleted {name}") } else { format!("{name} not enrolled") });
+        }
+        Cmd::FingersEval { recordings } => {
+            let recs = palmid::fingernum::read_recordings(recordings)?;
+            println!("{}", serde_json::to_string_pretty(&palmid::fingernum::evaluate(&recs, &palmid::fingernum::Rules::default()))?);
+            return Ok(());
         }
         Cmd::List => {
             let g = Gallery::open(&cli.gallery, GalleryConfig::default())?;

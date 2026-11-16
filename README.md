@@ -61,8 +61,12 @@ the teachers and YOLOX-Nano is trained on the grayscale copies. Everything at ru
   track). Checked: 960 synthetic poses (5 rotations × 2 scales × mirrored × noise) all correct; on
   the opencv_zoo demo clip, 45 of 47 detected open hands read 5 (2 read 4: thumb close to the palm)
   and the closing hands, followed by landmarks, read 10 once closed (half-closed frames give no
-  number). Not yet measured on labelled real gestures, so 6–9 on real hands are unverified;
-  `PALMID_FINGER_CASES=<labelled.jsonl> cargo test --test fingernum real` scores a recording.
+  number). Not yet measured on labelled real gestures, so 6–9 on real hands are unverified.
+  **Measuring it on your hands:** in the web app, section "4 · Finger numbers", type a number,
+  press Record and hold the gesture (60 frames with a hand are saved as landmarks, no images, to
+  `$PALMID_WORK/finger_recordings.jsonl`); repeat for each number, then press Score for per-number
+  recall, precision and MCC plus the multiclass MCC over 1–10 and "no number". The same file scores
+  from the command line with `palmid fingers-eval $PALMID_WORK/finger_recordings.jsonl`.
 * **Face mesh:** for each face detection, MediaPipe's face-landmark model (468 points, Apache-2.0)
   runs on the grayscale crop, and the points are joined by a Delaunay triangulation on the live view
   (the dense, licence-clean version of a dlib 68-point mesh). The model is converted from the

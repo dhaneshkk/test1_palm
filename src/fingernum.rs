@@ -177,3 +177,84 @@ impl Stabilizer {
         (1..=10).find(|&n| self.recent.iter().filter(|&&x| x == Some(n)).count() >= self.need)
     }
 }
+
+// ── scoring labelled recordings ─────────────────────────────────────────────────────────────────────
+
+/// One labelled frame: the gesture the person was showing and the landmarks the model gave.
+#[derive(Clone, Debug, Serialize, serde::Deserialize)]
+pub struct Recording {
+    pub label: u8,
+    pub points: Vec<[f32; 3]>,
+    #[serde(default)]
+    pub confidence: f32,
+    #[serde(default)]
+    pub frame: u64,
+}
+
+pub fn read_recordings(path: &std::path::Path) -> anyhow::Result<Vec<Recording>> {
+    let s = std::fs::read_to_string(path)?;
+    s.lines().filter(|l| !l.trim().is_empty()).map(|l| Ok(serde_json::from_str(l)?)).collect()
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ClassScore {
+    pub label: u8,
+    pub frames: usize,
+    pub precision: Option<f64>,
+    pub recall: Option<f64>,
+    /// one-vs-rest MCC (None when undefined)
+    pub mcc: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FingerReport {
+    pub frames: usize,
+    pub accuracy: f64,
+    /// share of frames given no number at all
+    pub abstained: f64,
+    /// multiclass MCC (Gorodkin's R_K) over the 11 outcomes 1–10 and "no number"
+    pub mcc: Option<f64>,
+    pub per_class: Vec<ClassScore>,
+    /// confusion[true][predicted], index 0 = no number
+    pub confusion: Vec<Vec<usize>>,
+}
+
+fn mcc4(tp: f64, fp: f64, fn_: f64, tn: f64) -> Option<f64> {
+    let d = ((tp + fp) * (tp + fn_) * (tn + fp) * (tn + fn_)).sqrt();
+    (d > 0.0).then(|| (tp * tn - fp * fn_) / d)
+}
+
+/// Score frame-level predictions against labels (per frame, no stabiliser).
+pub fn evaluate(recs: &[Recording], r: &Rules) -> FingerReport {
+    let mut c = vec![vec![0usize; 11]; 11];
+    for rec in recs {
+        let pose = HandPose { points: rec.points.clone(), confidence: rec.confidence, handedness: 0.5 };
+        let p = classify(&pose, r).map(|g| g.value as usize).unwrap_or(0);
+        c[(rec.label as usize).min(10)][p] += 1;
+    }
+    let s: usize = c.iter().flatten().sum();
+    let tr: usize = (0..11).map(|k| c[k][k]).sum();
+    let t: Vec<f64> = (0..11).map(|k| c[k].iter().sum::<usize>() as f64).collect(); // true counts
+    let p: Vec<f64> = (0..11).map(|k| (0..11).map(|i| c[i][k]).sum::<usize>() as f64).collect(); // predicted counts
+    let (sf, cf) = (s as f64, tr as f64);
+    let num = cf * sf - (0..11).map(|k| p[k] * t[k]).sum::<f64>();
+    let den = ((sf * sf - p.iter().map(|x| x * x).sum::<f64>()) * (sf * sf - t.iter().map(|x| x * x).sum::<f64>())).sqrt();
+    let per_class = (1..=10u8)
+        .filter(|&k| t[k as usize] > 0.0)
+        .map(|k| {
+            let k = k as usize;
+            let tp = c[k][k] as f64;
+            let (fn_, fp) = (t[k] - tp, p[k] - tp);
+            let tn = sf - tp - fn_ - fp;
+            ClassScore { label: k as u8, frames: t[k] as usize, precision: (p[k] > 0.0).then(|| tp / p[k]), recall: Some(tp / t[k]), mcc: mcc4(tp, fp, fn_, tn) }
+        })
+        .collect();
+    FingerReport {
+        frames: s,
+        accuracy: if s > 0 { cf / sf } else { 0.0 },
+        abstained: if s > 0 { p[0] / sf } else { 0.0 },
+        mcc: (den > 0.0).then(|| num / den),
+        per_class,
+        confusion: c,
+    }
+}

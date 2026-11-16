@@ -53,6 +53,7 @@ impl Config {
     pub fn onnx(&self) -> PathBuf { self.models().join("palmid_int8.onnx") }
     pub fn meta(&self) -> PathBuf { self.models().join("palmid_model.json") }
     pub fn gallery(&self) -> PathBuf { self.work.join("palm_gallery.json") }
+    pub fn finger_recordings(&self) -> PathBuf { self.work.join("finger_recordings.jsonl") }
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -113,6 +114,19 @@ impl Default for TrainStatus {
     }
 }
 
+/// Labelled finger-number recordings, for measuring the rules on real hands.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct FingerRecStatus {
+    /// number being recorded and frames still to capture
+    pub active: Option<(u8, usize)>,
+    /// recorded frames per number (index 1–10)
+    pub counts: [usize; 11],
+    pub report: Option<palmid::fingernum::FingerReport>,
+}
+
+/// Frames with a hand captured per "Record" press (about 3–6 s at the usual frame rates).
+pub const FINGER_REC_FRAMES: usize = 60;
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct EnrollStatus {
     pub active: bool,
@@ -145,6 +159,7 @@ pub struct Status {
     pub face_model: Option<String>,
     /// Chinese finger number held steady (≥ 6 of the last 8 frames) by the most confident hand
     pub finger_number: Option<u8>,
+    pub finger_rec: FingerRecStatus,
     pub people: Vec<Person>,
 }
 
@@ -274,6 +289,7 @@ impl App {
             child_pid: Mutex::new(None),
         }));
         app.refresh_people();
+        app.load_finger_counts();
         app.spawn_hand_model();
         app.spawn_face_model();
         Ok(app)
@@ -313,6 +329,43 @@ impl App {
             }
             Err(e) => app.update(|s| s.face_model = Some(format!("failed: {e:#}"))),
         });
+    }
+
+    // ── finger-number recordings ───────────────────────────────────────────────
+    pub fn start_finger_recording(&self, label: u8) -> Result<String> {
+        anyhow::ensure!((1..=10).contains(&label), "number must be 1–10");
+        anyhow::ensure!(lock(&self.0.rt).hand.is_some(), "the hand-landmark model is not loaded yet");
+        self.update(|s| s.finger_rec.active = Some((label, FINGER_REC_FRAMES)));
+        Ok(format!("recording {FINGER_REC_FRAMES} frames of “{label}” — hold the gesture, move it around a little"))
+    }
+
+    fn record_finger_frame(&self, label: u8, h: &palmid::handpose::HandPose, frame: u64) -> Result<()> {
+        use std::io::Write;
+        let rec = palmid::fingernum::Recording { label, points: h.points.clone(), confidence: h.confidence, frame };
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(self.0.cfg.finger_recordings())?;
+        writeln!(f, "{}", serde_json::to_string(&rec)?)?;
+        self.update(|s| {
+            s.finger_rec.counts[label as usize] += 1;
+            s.finger_rec.active = match s.finger_rec.active { Some((l, left)) if left > 1 => Some((l, left - 1)), _ => None };
+        });
+        Ok(())
+    }
+
+    /// Score the rules on everything recorded so far (frame level, per-number and multiclass MCC).
+    pub fn score_finger_recordings(&self) -> Result<String> {
+        let path = self.0.cfg.finger_recordings();
+        anyhow::ensure!(path.exists(), "nothing recorded yet");
+        let recs = palmid::fingernum::read_recordings(&path)?;
+        let rep = palmid::fingernum::evaluate(&recs, &palmid::fingernum::Rules::default());
+        let msg = format!("{} frames: accuracy {:.1} %, MCC {}", rep.frames, 100.0 * rep.accuracy, rep.mcc.map(|m| format!("{m:.3}")).unwrap_or_else(|| "n/a (record at least two numbers)".into()));
+        self.update(|s| s.finger_rec.report = Some(rep));
+        Ok(msg)
+    }
+
+    fn load_finger_counts(&self) {
+        if let Ok(recs) = palmid::fingernum::read_recordings(&self.0.cfg.finger_recordings()) {
+            self.update(|s| recs.iter().for_each(|r| s.finger_rec.counts[(r.label as usize).min(10)] += 1));
+        }
     }
 
     pub fn status(&self) -> Status {
@@ -381,6 +434,10 @@ impl App {
             let (objects, boxes) = self.step(&rgb, &gray)?;
             let best = objects.iter().filter(|o| o.hand.is_some()).max_by(|a, b| a.hand.as_ref().unwrap().confidence.total_cmp(&b.hand.as_ref().unwrap().confidence));
             let held = fingers.push(best.and_then(|o| o.finger_number.as_ref()).map(|f| f.value));
+            let rec = lock(&self.0.status).finger_rec.active; // guard dropped here: record_finger_frame locks status again
+            if let (Some((label, _)), Some(h)) = (rec, best.and_then(|o| o.hand.as_ref())) {
+                self.record_finger_frame(label, h, n)?;
+            }
             let mut vis = gray.clone();
             for (b, v, w) in boxes {
                 vis.draw_rect(b, v, w);

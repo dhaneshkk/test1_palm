@@ -210,3 +210,24 @@ fn track_through_frames() {
         }
     }
 }
+
+#[test]
+fn evaluate_counts_and_mcc() {
+    use palmid::fingernum::{evaluate, Recording};
+    let r = Rules::default();
+    let mut recs = vec![];
+    for (label, _, p) in cases() {
+        for seed in 0..5u64 {
+            let h = to_image(&build(p), 10.0, 100.0, false, 0.01, seed);
+            recs.push(Recording { label, points: h.points, confidence: 0.95, frame: seed });
+        }
+    }
+    // one deliberately wrong label
+    recs[0].label = 2;
+    let rep = evaluate(&recs, &r);
+    assert_eq!(rep.frames, recs.len());
+    assert_eq!(rep.confusion[2][1], 1);
+    assert!((rep.accuracy - (recs.len() - 1) as f64 / recs.len() as f64).abs() < 1e-12);
+    assert!(rep.mcc.unwrap() > 0.95 && rep.mcc.unwrap() < 1.0);
+    eprintln!("accuracy {:.3}, MCC {:.3}", rep.accuracy, rep.mcc.unwrap());
+}
