@@ -37,11 +37,14 @@ pub struct ObjectResult {
     /// 21 hand landmarks for palm detections, when the hand-landmark model is loaded
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hand: Option<crate::handpose::HandPose>,
+    /// 468-point face mesh for face detections, when the face-mesh model is loaded
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub face_mesh: Option<crate::facemesh::FaceMesh>,
 }
 
 impl ObjectResult {
     pub fn new(class: String, score: f32, bbox: [f32; 4]) -> Self {
-        Self { class, score, bbox, identity: None, candidates: None, note: None, hand: None }
+        Self { class, score, bbox, identity: None, candidates: None, note: None, hand: None, face_mesh: None }
     }
 }
 
@@ -87,6 +90,7 @@ pub struct Engine {
     pub debounce_n: u32,
     pub debounce_k: u32,
     pub hand: Option<crate::handpose::HandLandmarker>,
+    pub mesh: Option<crate::facemesh::FaceMesher>,
 }
 
 impl Engine {
@@ -109,6 +113,8 @@ impl Engine {
                     o.identity = Some(if stable { identity } else { "pending".into() });
                     o.candidates = Some(candidates);
                 }
+            } else if let Some(m) = self.mesh.as_mut().filter(|_| self.det.meta.classes[d.cls] == "face") {
+                o.face_mesh = m.mesh(gray, d.bbox)?;
             }
             objects.push(o);
         }
@@ -121,12 +127,15 @@ pub fn annotate(gray: &GrayImage, dets: &[Detection], palm_cls: Option<usize>) -
     annotate_with(gray, dets, palm_cls, &[])
 }
 
-/// As `annotate`, plus hand skeletons.
+/// As `annotate`, plus hand skeletons and face meshes.
 pub fn annotate_with(gray: &GrayImage, dets: &[Detection], palm_cls: Option<usize>, objects: &[ObjectResult]) -> GrayImage {
     let mut vis = gray.clone();
     for o in objects {
         if let Some(h) = &o.hand {
             crate::handpose::draw_skeleton(&mut vis, h, 180, 255);
+        }
+        if let Some(m) = &o.face_mesh {
+            crate::facemesh::draw_mesh(&mut vis, m, 150, 255);
         }
     }
     for d in dets {

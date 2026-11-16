@@ -11,6 +11,7 @@ use palmid::gallery::{Debounce, EnrollOutcome, Gallery, GalleryConfig};
 use palmid::imgproc::{GrayImage, RgbImage};
 use palmid::lean_mirror::{Phase, can_transition};
 use palmid::metrics;
+use palmid::facemesh::FaceMesher;
 use palmid::handpose::{HandLandmarker, HANDPOSE_URL};
 use palmid::palmprint::{Code, PalmCoder, PalmParams, RoiMode};
 use palmid::server::{palm_codes, palm_codes_for, ObjectResult};
@@ -140,6 +141,8 @@ pub struct Status {
     pub model_loaded: Option<String>,
     /// 21-point hand-landmark model: "loaded", "downloading…" or an error
     pub hand_model: Option<String>,
+    /// 468-point face-mesh model (embedded): "loaded" or an error
+    pub face_model: Option<String>,
     pub people: Vec<Person>,
 }
 
@@ -158,6 +161,7 @@ pub struct Runtime {
     pub gallery: Gallery,
     pub debounce: Debounce,
     pub hand: Option<HandLandmarker>,
+    pub mesh: Option<FaceMesher>,
 }
 
 impl Runtime {
@@ -181,6 +185,8 @@ impl Runtime {
                     o.identity = Some(if stable { id.identity } else { "pending".into() });
                     o.candidates = Some(id.candidates);
                 }
+            } else if let Some(m) = self.mesh.as_mut().filter(|_| det.meta.classes[d.cls] == "face") {
+                o.face_mesh = m.mesh(gray, d.bbox)?;
             }
             out.push(o);
         }
@@ -231,7 +237,7 @@ impl App {
             None
         };
         let app = App(Arc::new(Inner {
-            rt: Mutex::new(Runtime { det, coder: PalmCoder::new(PalmParams::default()), gallery, debounce: Debounce::default(), hand: None }),
+            rt: Mutex::new(Runtime { det, coder: PalmCoder::new(PalmParams::default()), gallery, debounce: Debounce::default(), hand: None, mesh: None }),
             cfg,
             status: Mutex::new(status),
             mode: Mutex::new(Mode::Infer),
@@ -244,6 +250,7 @@ impl App {
         }));
         app.refresh_people();
         app.spawn_hand_model();
+        app.spawn_face_model();
         Ok(app)
     }
 
@@ -268,6 +275,18 @@ impl App {
                 }
                 Err(e) => app.update(|s| s.hand_model = Some(format!("failed: {e:#}"))),
             }
+        });
+    }
+
+    /// Load the embedded 468-point face-mesh model in the background.
+    fn spawn_face_model(&self) {
+        let app = self.clone();
+        std::thread::spawn(move || match FaceMesher::embedded(app.0.cfg.threads) {
+            Ok(m) => {
+                lock(&app.0.rt).mesh = Some(m);
+                app.update(|s| s.face_model = Some("loaded".into()));
+            }
+            Err(e) => app.update(|s| s.face_model = Some(format!("failed: {e:#}"))),
         });
     }
 
@@ -341,6 +360,9 @@ impl App {
             for o in &objects {
                 if let Some(h) = &o.hand {
                     palmid::handpose::draw_skeleton(&mut vis, h, 180, 255);
+                }
+                if let Some(m) = &o.face_mesh {
+                    palmid::facemesh::draw_mesh(&mut vis, m, 150, 255);
                 }
             }
             *lock(&self.0.frame) = Arc::new(vis.to_jpeg(75));

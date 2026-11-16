@@ -105,3 +105,24 @@ theorem no_skip_calibration : canTransition 3 5 = false := by decide
 theorem collection_waits_for_training : canTransition 3 1 = false ∧ canTransition 4 1 = false := by decide
 theorem no_self_loops (a : Nat) : canTransition a a = false := by
   rcases a with _ | _ | _ | _ | _ | _ | _ | a <;> simp [canTransition]
+
+/-! ## §7 Face-mesh crop (src/facemesh.rs, integer pixels)
+
+side = ⌊3·m/2⌋ with m = max(w, h); x0 = ⌊(x1+x2)/2⌋ − ⌊side/2⌋. The square crop always contains the
+face box along each axis, with at least ⌊m/4⌋ − 1 pixels of context on both sides. -/
+
+def cropSide (w h : Int) : Int := 3 * max w h / 2
+def cropOrigin (a b side : Int) : Int := (a + b) / 2 - side / 2
+
+theorem crop_contains_box (x1 x2 y1 y2 : Int) (hh : y1 ≤ y2) :
+    let s := cropSide (x2 - x1) (y2 - y1)
+    cropOrigin x1 x2 s ≤ x1 ∧ x2 ≤ cropOrigin x1 x2 s + s := by
+  simp only [cropSide, cropOrigin]
+  constructor <;> omega
+
+theorem crop_margin (x1 x2 y1 y2 : Int) :
+    let m := max (x2 - x1) (y2 - y1)
+    let s := cropSide (x2 - x1) (y2 - y1)
+    x1 - cropOrigin x1 x2 s ≥ m / 4 - 1 ∧ cropOrigin x1 x2 s + s - x2 ≥ m / 4 - 1 := by
+  simp only [cropSide, cropOrigin]
+  constructor <;> omega

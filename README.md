@@ -50,6 +50,13 @@ the teachers and YOLOX-Nano is trained on the grayscale copies. Everything at ru
   put `handpose.onnx` next to `--model`. On grayscale crops, measured on 54 hands: mean confidence 0.93
   (colour 0.97), landmarks within about 5 % of palm size of the colour result. The palm box has no
   rotation keypoints, so the hand is assumed roughly upright.
+* **Face mesh:** for each face detection, MediaPipe's face-landmark model (468 points, Apache-2.0)
+  runs on the grayscale crop, and the points are joined by a Delaunay triangulation on the live view
+  (the dense, licence-clean version of a dlib 68-point mesh). The model is converted from the
+  `mediapipe` 0.10.14 wheel to ONNX and **embedded in the binaries** (2.4 MB), so nothing downloads;
+  `PALMID_FACEMESH=<file.onnx>` overrides it. It is display only: faces are not identified. Measured
+  on 16 face crops: presence 1.00 on grayscale, points within 1.4 % of the inter-ocular distance of
+  the colour result. Faces are assumed upright. See `assets/models/NOTICE-face_landmark.md`.
 * **Safety gate:** if a person's genuine distances aren't clearly below chance (shuffled-code
   distance − 0.06), the palm texture wasn't resolved and any threshold would accept everyone, so
   enrollment is **refused** with a "move closer / more light" message.
@@ -230,13 +237,14 @@ boxes. Use more frames and epochs, a smaller batch, or a GPU.
 | `notebooks/` | original single-cell Colab notebook |
 | `lean/` | `PalmID.lean`, the formal guarantees |
 | `tests/` | OpenCV / onnxruntime parity, gallery end to end, teacher parity |
-| `tools/` | fixture generators (`make_fixtures.py`, `teacher_ref.py`) |
+| `tools/` | fixture generators (`make_fixtures.py`, `teacher_ref.py`, `handpose_ref.py`, `facemesh_ref.py`), `convert_facemesh.sh` |
+| `assets/models/` | embedded face-landmark ONNX and its licence notice |
 | `models/` | default location for CLI models (not committed) |
 | `docs/` | screenshot |
 
 ## Formal guarantees and tests
 
-`lean/PalmID.lean`: 20 theorems, Lean 4.31, kernel only (Nat + `omega`, no Mathlib, no `sorry`):
+`lean/PalmID.lean`: 22 theorems, Lean 4.31, kernel only (Nat/Int + `omega`, no Mathlib, no `sorry`):
 
 | § | Theorems | Used by |
 |---|---|---|
@@ -246,6 +254,7 @@ boxes. Use more frames and epochs, a smaller batch, or a GPU.
 | 4 | `step_bounded`, `step_lipschitz`, `run_le`, `announce_needs_K_frames` | identity debounce |
 | 5 | `gate_cells` | palm resolution gate |
 | 6 | `swap_requires_calibrated`, `training_requires_data`, `no_skip_calibration`, `collection_waits_for_training`, `no_self_loops` | web-app job phases |
+| 7 | `crop_contains_box`, `crop_margin` | face-mesh crop always contains the face box, with ≥ ⌊m/4⌋ − 1 px context per side |
 
 `src/lean_mirror.rs` holds the integer mirrors the runtime actually calls, with exhaustive or
 brute-force checks of each theorem statement.
@@ -264,6 +273,8 @@ brute-force checks of each theorem statement.
 | colour teachers vs OpenCV FaceDetectorYN / notebook palm decode | IoU 1.0000 |
 | RGB→gray vs `cvtColor` | identical over all 2²⁴ colours |
 | 21 hand landmarks vs the opencv_zoo procedure (upright variant) | identical (worst 0.000 px; needs `PALMID_HANDPOSE`) |
+| 468-point face mesh vs onnxruntime-Python (`tools/facemesh_ref.py`) | identical (worst 0.000 px; needs `PALMID_FACEMESH_CASE`) |
+| Delaunay (Bowyer–Watson) vs `scipy.spatial.Delaunay`, 12 / 68 / 468 random points | identical triangle sets |
 | fast CompCode (responses only at the 28×28 sample points) vs full filter2d | bit-identical |
 | enrollment / identification (synthetic palm-line images) | 20/20 genuine accepted ×2, 0/20 unenrolled accepted, noise refused |
 
@@ -271,6 +282,10 @@ brute-force checks of each theorem statement.
 * Teacher tests need `PALMID_TEACHERS` (folder with `yunet.onnx`, `palm.onnx`) and
   `PALMID_TEACHER_CASES` / `PALMID_GRAY_CASES` (image | reference pairs from `tools/teacher_ref.py`).
   They are skipped otherwise, so CI doesn't run them.
+* The face-mesh parity test needs `PALMID_FACEMESH_CASE=<gray.png>|<ref.json>|<x1,y1,x2,y2>` (refs
+  from `tools/facemesh_ref.py`); `PALMID_FACEMESH_OUT=<png>` also writes the drawn mesh. On a face
+  with near-cocircular points the Rust and scipy triangulations can differ by a triangle (901 vs 902
+  on the test face); on generic points they are identical.
 * `tests/fixtures/test_model_int8.onnx` is a barely trained smoke-test model for parity tests only,
   not a usable detector. Regenerate fixtures with `tools/make_fixtures.py`.
 
@@ -305,6 +320,7 @@ On a 2-vCPU Xeon sandbox (no GPU):
 |---|---|
 | CLI, release build, 4 threads | about 25–45 ms per 640×480 frame end to end (detection + palm code); live loop about 24 fps from a video file |
 | with hand landmarks | about 88 ms per frame with ~1.2 palms per frame (detection + 21 landmarks + palm code) |
+| face mesh | Delaunay triangulation + drawing of 468 points: 0.7 ms per face (release) |
 | web app, collection | about 3–4 frames/s with both colour teachers (100 frames in 33 s) |
 | web app, training | 3 epochs on 60 frames: 66 s; 8 epochs on 180 frames, 2 threads: about 30 min |
 | API on the live model | 90–140 ms per request including JPEG/PNG decode |

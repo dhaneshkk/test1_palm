@@ -94,6 +94,7 @@ fn engine(cli: &Cli) -> Result<Engine> {
             let p = cli.model.with_file_name("handpose.onnx");
             if p.exists() { Some(palmid::handpose::HandLandmarker::new(&p, cli.threads)?) } else { None }
         },
+        mesh: Some(palmid::facemesh::FaceMesher::embedded(cli.threads)?),
     })
 }
 
