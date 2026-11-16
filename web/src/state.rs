@@ -143,6 +143,8 @@ pub struct Status {
     pub hand_model: Option<String>,
     /// 468-point face-mesh model (embedded): "loaded" or an error
     pub face_model: Option<String>,
+    /// Chinese finger number held steady (≥ 6 of the last 8 frames) by the most confident hand
+    pub finger_number: Option<u8>,
     pub people: Vec<Person>,
 }
 
@@ -162,6 +164,8 @@ pub struct Runtime {
     pub debounce: Debounce,
     pub hand: Option<HandLandmarker>,
     pub mesh: Option<FaceMesher>,
+    /// palm box re-derived from the last frame's landmarks, to follow a hand the detector misses
+    pub track: Option<[f32; 4]>,
 }
 
 impl Runtime {
@@ -177,6 +181,7 @@ impl Runtime {
                 let (wb, wa) = self.gallery.modes_needed();
                 let (codes, pose) = palm_codes_for(gray, d.bbox, &self.coder, self.hand.as_mut(), wb || !wa, wa)?;
                 o.hand = pose;
+                o.finger_number = o.hand.as_ref().and_then(|h| palmid::fingernum::classify(h, &palmid::fingernum::Rules::default()));
                 if codes.boxed.is_none() && codes.aligned.is_none() {
                     o.note = Some("move closer".into());
                 } else {
@@ -190,6 +195,26 @@ impl Runtime {
             }
             out.push(o);
         }
+        // Follow the hand with landmarks alone when the detector drops it — palm detectors rarely
+        // fire on fists, pinches or hooked fingers (finger numbers 7, 9, 10). The landmark model's
+        // own confidence (≥ 0.8) ends the track.
+        let best = out.iter().filter_map(|o| o.hand.as_ref()).max_by(|a, b| a.confidence.total_cmp(&b.confidence));
+        self.track = match (best, self.track, self.hand.as_mut()) {
+            (Some(h), _, _) => Some(palmid::handpose::palm_box_from_landmarks(h)),
+            (None, Some(b), Some(hl)) => match hl.landmarks(gray, b)? {
+                Some(h) => {
+                    let nb = palmid::handpose::palm_box_from_landmarks(&h);
+                    let mut o = ObjectResult::new("palm".into(), h.confidence, nb);
+                    o.note = Some("tracked by landmarks".into());
+                    o.finger_number = palmid::fingernum::classify(&h, &palmid::fingernum::Rules::default());
+                    o.hand = Some(h);
+                    out.push(o);
+                    Some(nb)
+                }
+                None => None,
+            },
+            _ => None,
+        };
         Ok((out, dets))
     }
 }
@@ -237,7 +262,7 @@ impl App {
             None
         };
         let app = App(Arc::new(Inner {
-            rt: Mutex::new(Runtime { det, coder: PalmCoder::new(PalmParams::default()), gallery, debounce: Debounce::default(), hand: None, mesh: None }),
+            rt: Mutex::new(Runtime { det, coder: PalmCoder::new(PalmParams::default()), gallery, debounce: Debounce::default(), hand: None, mesh: None, track: None }),
             cfg,
             status: Mutex::new(status),
             mode: Mutex::new(Mode::Infer),
@@ -349,10 +374,13 @@ impl App {
         let mut src = Source::open_rgb(&cfg.source, cfg.width, cfg.height).with_context(|| format!("opening {}", cfg.source))?;
         self.update(|s| { s.camera.running = true; s.camera.error = None; });
         let (mut n, t0, mut last_pub) = (0u64, Instant::now(), Instant::now() - Duration::from_secs(1));
+        let mut fingers = palmid::fingernum::Stabilizer::default();
         while let Some(rgb) = src.read_rgb()? {
             let t = Instant::now();
             let gray = rgb.to_gray();
             let (objects, boxes) = self.step(&rgb, &gray)?;
+            let best = objects.iter().filter(|o| o.hand.is_some()).max_by(|a, b| a.hand.as_ref().unwrap().confidence.total_cmp(&b.hand.as_ref().unwrap().confidence));
+            let held = fingers.push(best.and_then(|o| o.finger_number.as_ref()).map(|f| f.value));
             let mut vis = gray.clone();
             for (b, v, w) in boxes {
                 vis.draw_rect(b, v, w);
@@ -372,7 +400,7 @@ impl App {
                 last_pub = Instant::now();
                 let fps = n as f64 / t0.elapsed().as_secs_f64();
                 let ms = t.elapsed().as_secs_f64() * 1e3;
-                self.update(|s| { s.camera.fps = fps; s.camera.frame_ms = ms; s.camera.frames = n; s.objects = objects; });
+                self.update(|s| { s.camera.fps = fps; s.camera.frame_ms = ms; s.camera.frames = n; s.objects = objects; s.finger_number = held; });
             }
         }
         bail!("source ended")

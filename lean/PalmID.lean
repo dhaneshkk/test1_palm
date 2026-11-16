@@ -126,3 +126,34 @@ theorem crop_margin (x1 x2 y1 y2 : Int) :
     x1 - cropOrigin x1 x2 s ≥ m / 4 - 1 ∧ cropOrigin x1 x2 s + s - x2 ≥ m / 4 - 1 := by
   simp only [cropSide, cropOrigin]
   constructor <;> omega
+
+/-! ## §8 Finger-number stabiliser (src/fingernum.rs `Stabilizer`)
+
+The window holds the last frames' readings (0 = no number). A number is reported when at least
+`need` readings in a window of at most `w` frames equal it, with `w < 2·need`. Then two different
+numbers can never both qualify, so the report is unique. -/
+
+def countEq (l : List Nat) (a : Nat) : Nat := (l.filter (fun x => decide (x = a))).length
+
+theorem countEq_cons (x : Nat) (l : List Nat) (c : Nat) :
+    countEq (x :: l) c = (if x = c then 1 else 0) + countEq l c := by
+  unfold countEq
+  by_cases h : x = c
+  · simp [h]
+    omega
+  · simp [h]
+
+theorem count_two_le (l : List Nat) (a b : Nat) (hab : a ≠ b) :
+    countEq l a + countEq l b ≤ l.length := by
+  induction l with
+  | nil => simp [countEq]
+  | cons x l ih =>
+    rw [countEq_cons, countEq_cons, List.length_cons]
+    split <;> split <;> omega
+
+theorem stable_unique (l : List Nat) (w need a b : Nat) (hl : l.length ≤ w) (hm : w < 2 * need)
+    (ha : need ≤ countEq l a) (hb : need ≤ countEq l b) : a = b := by
+  apply Classical.byContradiction
+  intro h
+  have := count_two_le l a b h
+  omega

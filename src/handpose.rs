@@ -147,3 +147,32 @@ pub fn draw_skeleton(img: &mut GrayImage, pose: &HandPose, bone: u8, joint: u8) 
         img.draw_dot(pt[0], pt[1], 2, joint);
     }
 }
+
+/// Palm box (x1,y1,x2,y2) re-derived from landmarks, so a hand can be followed when the detector
+/// misses it (fists, pinches, hooked fingers — poses palm detectors rarely fire on). Square, centred
+/// on the palm points (wrist, thumb base, four knuckles) shifted 0.125·side toward the wrist, side =
+/// their larger extent. Measured against MediaPipe palm-detector boxes on 47 open hands: side ratio
+/// 1.01, centre offset ≈ 0.12·side before the shift (tests/fingernum.rs, `track_through_frames`).
+pub fn palm_box_from_landmarks(h: &HandPose) -> [f32; 4] {
+    let idx = [0usize, 1, 5, 9, 13, 17];
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    let (mut cx, mut cy) = (0.0, 0.0);
+    for &i in &idx {
+        let p = h.points[i];
+        x0 = x0.min(p[0]);
+        y0 = y0.min(p[1]);
+        x1 = x1.max(p[0]);
+        y1 = y1.max(p[1]);
+        cx += p[0] / idx.len() as f32;
+        cy += p[1] / idx.len() as f32;
+    }
+    let side = PALM_BOX_SCALE * (x1 - x0).max(y1 - y0);
+    // detector boxes sit lower on the palm (toward the wrist) than the landmark centroid
+    let (ux, uy) = (h.points[0][0] - h.points[9][0], h.points[0][1] - h.points[9][1]);
+    let n = (ux * ux + uy * uy).sqrt().max(1e-6);
+    let (cx, cy) = (cx + PALM_BOX_SHIFT * side * ux / n, cy + PALM_BOX_SHIFT * side * uy / n);
+    [cx - side / 2.0, cy - side / 2.0, cx + side / 2.0, cy + side / 2.0]
+}
+
+pub const PALM_BOX_SCALE: f32 = 1.0;
+pub const PALM_BOX_SHIFT: f32 = 0.125;

@@ -37,3 +37,4 @@ th { color: var(--dim); font-weight: 500; }
 .ok { color: var(--ok); }
 .err { color: var(--err); }
 footer { color: var(--dim); font-size: 12px; padding: 8px 20px 20px; }
+.fingernum { font-size: 1.6em; }

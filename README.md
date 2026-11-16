@@ -50,6 +50,19 @@ the teachers and YOLOX-Nano is trained on the grayscale copies. Everything at ru
   put `handpose.onnx` next to `--model`. On grayscale crops, measured on 54 hands: mean confidence 0.93
   (colour 0.97), landmarks within about 5 % of palm size of the colour result. The palm box has no
   rotation keypoints, so the hand is assumed roughly upright.
+* **Chinese finger numbers (1–10):** read from the 21 hand landmarks with geometric rules
+  (`src/fingernum.rs`, no training): finger extension from 3-D joint angles in a hand-centred frame,
+  so position, scale, in-plane rotation and left/right hand don't matter. 7 = thumb, index and
+  middle tips pinched; 9 = hooked index; 10 = fist or crossed index and middle; 3 accepts both the
+  index-middle-ring and middle-ring-pinky forms. The live view reports a number once it holds for 6
+  of the last 8 frames (Lean §8 proves two numbers can never both qualify). Palm detectors rarely
+  fire on fists and pinches, so when the detector drops a hand the app keeps following it with the
+  landmark model alone (box re-derived from the last landmarks; the model's confidence ends the
+  track). Checked: 960 synthetic poses (5 rotations × 2 scales × mirrored × noise) all correct; on
+  the opencv_zoo demo clip, 45 of 47 detected open hands read 5 (2 read 4: thumb close to the palm)
+  and the closing hands, followed by landmarks, read 10 once closed (half-closed frames give no
+  number). Not yet measured on labelled real gestures, so 6–9 on real hands are unverified;
+  `PALMID_FINGER_CASES=<labelled.jsonl> cargo test --test fingernum real` scores a recording.
 * **Face mesh:** for each face detection, MediaPipe's face-landmark model (468 points, Apache-2.0)
   runs on the grayscale crop, and the points are joined by a Delaunay triangulation on the live view
   (the dense, licence-clean version of a dlib 68-point mesh). The model is converted from the
@@ -244,7 +257,7 @@ boxes. Use more frames and epochs, a smaller batch, or a GPU.
 
 ## Formal guarantees and tests
 
-`lean/PalmID.lean`: 22 theorems, Lean 4.31, kernel only (Nat/Int + `omega`, no Mathlib, no `sorry`):
+`lean/PalmID.lean`: 25 theorems, Lean 4.31, kernel only (Nat/Int + `omega`, no Mathlib, no `sorry`):
 
 | § | Theorems | Used by |
 |---|---|---|
@@ -255,6 +268,7 @@ boxes. Use more frames and epochs, a smaller batch, or a GPU.
 | 5 | `gate_cells` | palm resolution gate |
 | 6 | `swap_requires_calibrated`, `training_requires_data`, `no_skip_calibration`, `collection_waits_for_training`, `no_self_loops` | web-app job phases |
 | 7 | `crop_contains_box`, `crop_margin` | face-mesh crop always contains the face box, with ≥ ⌊m/4⌋ − 1 px context per side |
+| 8 | `countEq_cons`, `count_two_le`, `stable_unique` | finger-number stabiliser: with window < 2·need, at most one number can be reported |
 
 `src/lean_mirror.rs` holds the integer mirrors the runtime actually calls, with exhaustive or
 brute-force checks of each theorem statement.
@@ -275,6 +289,7 @@ brute-force checks of each theorem statement.
 | 21 hand landmarks vs the opencv_zoo procedure (upright variant) | identical (worst 0.000 px; needs `PALMID_HANDPOSE`) |
 | 468-point face mesh vs onnxruntime-Python (`tools/facemesh_ref.py`) | identical (worst 0.000 px; needs `PALMID_FACEMESH_CASE`) |
 | Delaunay (Bowyer–Watson) vs `scipy.spatial.Delaunay`, 12 / 68 / 468 random points | identical triangle sets |
+| finger numbers on 960 synthetic hand poses (rotation ±40°, scale, mirror, landmark noise) | all correct |
 | fast CompCode (responses only at the 28×28 sample points) vs full filter2d | bit-identical |
 | enrollment / identification (synthetic palm-line images) | 20/20 genuine accepted ×2, 0/20 unenrolled accepted, noise refused |
 

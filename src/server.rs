@@ -40,11 +40,14 @@ pub struct ObjectResult {
     /// 468-point face mesh for face detections, when the face-mesh model is loaded
     #[serde(skip_serializing_if = "Option::is_none")]
     pub face_mesh: Option<crate::facemesh::FaceMesh>,
+    /// Chinese finger number (1–10) read from the hand landmarks of this frame
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finger_number: Option<crate::fingernum::FingerNumber>,
 }
 
 impl ObjectResult {
     pub fn new(class: String, score: f32, bbox: [f32; 4]) -> Self {
-        Self { class, score, bbox, identity: None, candidates: None, note: None, hand: None, face_mesh: None }
+        Self { class, score, bbox, identity: None, candidates: None, note: None, hand: None, face_mesh: None, finger_number: None }
     }
 }
 
@@ -105,6 +108,7 @@ impl Engine {
                 let (wb, wa) = self.gallery.modes_needed();
                 let (codes, pose) = palm_codes_for(gray, d.bbox, &self.coder, self.hand.as_mut(), wb || !wa, wa)?;
                 o.hand = pose;
+                o.finger_number = o.hand.as_ref().and_then(|h| crate::fingernum::classify(h, &crate::fingernum::Rules::default()));
                 if codes.boxed.is_none() && codes.aligned.is_none() {
                     o.note = Some("palm too small or cut off — move closer".into());
                 } else {

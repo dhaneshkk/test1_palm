@@ -86,7 +86,7 @@ pub async fn dashboard(cx: &Cx) -> Result<impl View> {
                 <main>
                     <section class="feed-col">
                         video()
-                        <p class="hint">"Faces: thin white boxes with a 468-point Delaunay mesh. Palms: thick grey boxes with the 21-point hand skeleton. Everything runs on the grayscale frame."</p>
+                        <p class="hint">"Faces: thin white boxes with a 468-point Delaunay mesh. Palms: thick grey boxes with the 21-point hand skeleton; a Chinese finger number (1–10) held for 6 of 8 frames shows under status. Everything runs on the grayscale frame."</p>
                     </section>
                     <section class="side">
                         controls()
@@ -211,6 +211,7 @@ async fn status_panels(cx: &Cx, s: Status) -> Result<impl View> {
                 <span>"model"</span><b>(s.model_loaded.clone().unwrap_or_else(|| "none yet".into()))</b>
                 <span>"hand landmarks"</span><b>(s.hand_model.clone().unwrap_or_else(|| "—".into()))</b>
                 <span>"face mesh"</span><b>(s.face_model.clone().unwrap_or_else(|| "—".into()))</b>
+                <span>"finger number"</span><b class="fingernum">(s.finger_number.map(|v| v.to_string()).unwrap_or_else(|| "—".into()))</b>
             </div>
             if let Some(e) = &s.camera.error { <p class="err">(e.clone())</p> }
             <ul class="objs">
@@ -220,6 +221,7 @@ async fn status_panels(cx: &Cx, s: Status) -> Result<impl View> {
                         if let Some(id) = &o.identity { " → " <b class="id">(id.clone())</b> }
                         if let Some(h) = &o.hand { " · 21 landmarks " (format!("{:.2}", h.confidence)) }
                         if let Some(m) = &o.face_mesh { " · 468-point mesh " (format!("{:.2}", m.presence)) }
+                        if let Some(f) = &o.finger_number { " · shows " (f.value.to_string()) " (" (f.rule) ")" }
                         if let Some(n) = &o.note { " · " <i>(n.clone())</i> }
                     </li>
                 }
