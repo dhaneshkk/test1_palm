@@ -35,6 +35,33 @@ fn nms(mut c: Vec<([f32; 4], f32)>, thr: f32) -> Vec<([f32; 4], f32)> {
     keep
 }
 
+/// YuNet face detector on its own (also used by the palm-recognition-prototype crate).
+pub struct FaceDetector {
+    yunet: Session,
+    pub thr: f32,
+}
+
+impl FaceDetector {
+    pub fn new(yunet: &Path, threads: usize) -> Result<Self> {
+        Ok(Self { yunet: session(yunet, threads)?, thr: 0.7 })
+    }
+
+    pub fn from_bytes(onnx: &[u8], threads: usize) -> Result<Self> {
+        init_ort()?;
+        let s = Session::builder()?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_intra_threads(threads)?
+            .commit_from_memory(onnx)
+            .context("loading YuNet")?;
+        Ok(Self { yunet: s, thr: 0.7 })
+    }
+
+    /// Faces as x1,y1,x2,y2 in frame pixels. Frames larger than 640 are downscaled to fit.
+    pub fn faces(&mut self, img: &RgbImage) -> Result<Vec<[f32; 4]>> {
+        yunet_faces(&mut self.yunet, img, self.thr)
+    }
+}
+
 pub struct Teachers {
     yunet: Session,
     palm: Session,
@@ -60,38 +87,7 @@ impl Teachers {
 
     /// Faces as x1,y1,x2,y2 in frame pixels. Frames larger than 640 are downscaled to fit.
     pub fn faces(&mut self, img: &RgbImage) -> Result<Vec<[f32; 4]>> {
-        const S: usize = 640;
-        let r = (S as f32 / img.w as f32).min(S as f32 / img.h as f32).min(1.0);
-        let src = if r < 1.0 { img.resize_linear((img.w as f32 * r) as usize, (img.h as f32 * r) as usize) } else { img.clone() };
-        // NCHW, BGR order, raw 0..255, zero padding bottom/right (as blobFromImage on the padded frame)
-        let mut t = vec![0f32; 3 * S * S];
-        for y in 0..src.h {
-            for x in 0..src.w {
-                let p = &src.data[(y * src.w + x) * 3..][..3];
-                for (c, v) in [p[2], p[1], p[0]].into_iter().enumerate() {
-                    t[c * S * S + y * S + x] = v as f32;
-                }
-            }
-        }
-        let out = self.yunet.run(ort::inputs!["input" => Tensor::from_array(([1usize, 3, S, S], t.into_boxed_slice()))?])?;
-        let mut cands = vec![];
-        for st in [8usize, 16, 32] {
-            let (_, cls) = out[format!("cls_{st}").as_str()].try_extract_tensor::<f32>()?;
-            let (_, obj) = out[format!("obj_{st}").as_str()].try_extract_tensor::<f32>()?;
-            let (_, bb) = out[format!("bbox_{st}").as_str()].try_extract_tensor::<f32>()?;
-            let cols = S / st;
-            for i in 0..cls.len() {
-                let score = (cls[i].clamp(0.0, 1.0) * obj[i].clamp(0.0, 1.0)).sqrt();
-                if score < self.face_thr {
-                    continue;
-                }
-                let (row, col) = ((i / cols) as f32, (i % cols) as f32);
-                let (cx, cy) = ((col + bb[i * 4]) * st as f32, (row + bb[i * 4 + 1]) * st as f32);
-                let (w, h) = (bb[i * 4 + 2].exp() * st as f32, bb[i * 4 + 3].exp() * st as f32);
-                cands.push(([(cx - w / 2.0) / r, (cy - h / 2.0) / r, (cx + w / 2.0) / r, (cy + h / 2.0) / r], score));
-            }
-        }
-        Ok(nms(cands, 0.3).into_iter().map(|(b, _)| b).collect())
+        yunet_faces(&mut self.yunet, img, self.face_thr)
     }
 
     /// Palms as x1,y1,x2,y2 in frame pixels (letterbox centred in 192×192, RGB/255, NHWC).
@@ -132,4 +128,39 @@ impl Teachers {
         }
         Ok(nms(cands, 0.3).into_iter().map(|(b, _)| b).collect())
     }
+}
+
+fn yunet_faces(yunet: &mut Session, img: &RgbImage, thr: f32) -> Result<Vec<[f32; 4]>> {
+    const S: usize = 640;
+    let r = (S as f32 / img.w as f32).min(S as f32 / img.h as f32).min(1.0);
+    let src = if r < 1.0 { img.resize_linear((img.w as f32 * r) as usize, (img.h as f32 * r) as usize) } else { img.clone() };
+    // NCHW, BGR order, raw 0..255, zero padding bottom/right (as blobFromImage on the padded frame)
+    let mut t = vec![0f32; 3 * S * S];
+    for y in 0..src.h {
+        for x in 0..src.w {
+            let p = &src.data[(y * src.w + x) * 3..][..3];
+            for (c, v) in [p[2], p[1], p[0]].into_iter().enumerate() {
+                t[c * S * S + y * S + x] = v as f32;
+            }
+        }
+    }
+    let out = yunet.run(ort::inputs!["input" => Tensor::from_array(([1usize, 3, S, S], t.into_boxed_slice()))?])?;
+    let mut cands = vec![];
+    for st in [8usize, 16, 32] {
+        let (_, cls) = out[format!("cls_{st}").as_str()].try_extract_tensor::<f32>()?;
+        let (_, obj) = out[format!("obj_{st}").as_str()].try_extract_tensor::<f32>()?;
+        let (_, bb) = out[format!("bbox_{st}").as_str()].try_extract_tensor::<f32>()?;
+        let cols = S / st;
+        for i in 0..cls.len() {
+            let score = (cls[i].clamp(0.0, 1.0) * obj[i].clamp(0.0, 1.0)).sqrt();
+            if score < thr {
+                continue;
+            }
+            let (row, col) = ((i / cols) as f32, (i % cols) as f32);
+            let (cx, cy) = ((col + bb[i * 4]) * st as f32, (row + bb[i * 4 + 1]) * st as f32);
+            let (w, h) = (bb[i * 4 + 2].exp() * st as f32, bb[i * 4 + 3].exp() * st as f32);
+            cands.push(([(cx - w / 2.0) / r, (cy - h / 2.0) / r, (cx + w / 2.0) / r, (cy + h / 2.0) / r], score));
+        }
+    }
+    Ok(nms(cands, 0.3).into_iter().map(|(b, _)| b).collect())
 }
