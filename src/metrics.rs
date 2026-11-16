@@ -8,10 +8,12 @@ use anyhow::Result;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-pub fn mcc(tp: u64, fp: u64, fn_: u64, tn: u64) -> f64 {
+/// Matthews correlation coefficient; `None` when undefined (a row or column of the confusion matrix
+/// is empty — e.g. every evaluation frame contains the class, so there are no negatives).
+pub fn mcc(tp: u64, fp: u64, fn_: u64, tn: u64) -> Option<f64> {
     let (tp, fp, fn_, tn) = (tp as f64, fp as f64, fn_ as f64, tn as f64);
     let d = ((tp + fp) * (tp + fn_) * (tn + fp) * (tn + fn_)).sqrt();
-    if d == 0.0 { 0.0 } else { (tp * tn - fp * fn_) / d }
+    if d == 0.0 { None } else { Some((tp * tn - fp * fn_) / d) }
 }
 
 pub struct Sample {
@@ -69,7 +71,13 @@ pub fn calibrate(det: &mut Detector, samples: &[Sample], fallback: f32) -> Resul
             let n = v.len();
             let (tau, source) = if n >= N_CAL_FORMAL_BOUND {
                 let q = 1.0 - v[conf_rank(n) - 1];
-                if q >= det.meta.score_floor { (q, "sccp".into()) } else { (det.meta.score_floor, "sccp_floor(coverage not attainable)".into()) }
+                if q >= det.meta.score_floor {
+                    (q, "sccp".into())
+                } else {
+                    // Some calibration objects are never detected, so no threshold reaches 1 − α coverage.
+                    // Dropping to the score floor would flood the live view with false boxes; use the fallback.
+                    (fallback, format!("fallback(coverage not attainable at n={n})"))
+                }
             } else {
                 (fallback, format!("fallback(n={n}<{N_CAL_FORMAL_BOUND})"))
             };
@@ -81,7 +89,8 @@ pub fn calibrate(det: &mut Detector, samples: &[Sample], fallback: f32) -> Resul
 #[derive(Serialize, Debug)]
 pub struct ClassMcc {
     pub class: String,
-    pub mcc: f64,
+    /// `None` = undefined (no negatives or no positives in the split)
+    pub mcc: Option<f64>,
     pub tp: u64,
     pub fp: u64,
     pub fn_: u64,
@@ -111,8 +120,9 @@ mod tests {
     use super::mcc;
     #[test]
     fn mcc_known_values() {
-        assert!((mcc(10, 0, 0, 10) - 1.0).abs() < 1e-12);
-        assert!((mcc(0, 10, 10, 0) + 1.0).abs() < 1e-12);
-        assert_eq!(mcc(0, 0, 0, 10), 0.0);
+        assert!((mcc(10, 0, 0, 10).unwrap() - 1.0).abs() < 1e-12);
+        assert!((mcc(0, 10, 10, 0).unwrap() + 1.0).abs() < 1e-12);
+        assert_eq!(mcc(0, 0, 0, 10), None); // no positives
+        assert_eq!(mcc(60, 0, 0, 0), None); // no negatives: all frames contain the class
     }
 }

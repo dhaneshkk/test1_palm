@@ -68,6 +68,14 @@ cargo run -p palmid-web --release              # open http://127.0.0.1:3000
 
 Re-run `source .venv/bin/activate` and the two `export` lines in each new terminal.
 
+To re-derive thresholds for an existing model without retraining (stop the web app first, then
+restart it):
+
+```bash
+target/release/palmid --model palmid_work/models/palmid_int8.onnx --meta palmid_work/models/palmid_model.json \
+  calibrate --data palmid_work/dataset --split cal
+```
+
 Then in the page:
 
 1. **Collect** about 300 frames. Show your face and open palms at different distances and angles.
@@ -85,7 +93,7 @@ not by the browser. Run the server on the laptop whose camera you want.
 |---|---|---|
 | `PALMID_SOURCE` | `webcam` | `webcam`, `webcam:/dev/video2`, `dshow:<camera name>` (Windows ffmpeg, e.g. from WSL2), a video file/URL (looped), or an image folder |
 | `PALMID_WORK` | `palmid_work` | dataset, models, gallery |
-| `PALMID_WIDTH` / `PALMID_HEIGHT` | `640` / `480` | capture size |
+| `PALMID_WIDTH` / `PALMID_HEIGHT` | `640` / `480` | capture size; with `dshow:` the camera is asked for this size. Use `1280`/`720` on an HD/FHD webcam for more palm-line detail |
 | `PALMID_PYTHON` / `PALMID_TRAINER` | `python3` / `trainer/train_student.py` | training job |
 | `PALMID_YOLOX`, `PALMID_YOLOX_WEIGHTS` | `~/.cache/palmid/…` | YOLOX checkout and COCO weights, fetched on first training run |
 | `PALMID_THREADS` | `4` | onnxruntime and torch threads |
@@ -199,8 +207,9 @@ again with the CLI or web app.
 
 **Training budget matters.** In testing on a 2-core CPU, 8 epochs on 180 training frames (88 SAM
 iterations at batch 16, about 30 minutes) was not enough. The palm detector could not reach the
-conformal recall target, so its threshold fell to the floor (shown as `sccp_floor(coverage not
-attainable)`) and palm MCC was 0. Use more frames and epochs, a smaller batch, or a GPU.
+conformal recall target. When that happens the threshold now falls back to 0.30 (shown as
+`fallback(coverage not attainable …)`) instead of the score floor, which flooded the view with false
+boxes. Use more frames and epochs, a smaller batch, or a GPU.
 
 ## Repository layout
 
@@ -264,7 +273,9 @@ reference fixtures on the runner first, because INT8 kernels differ across CPUs 
   reachable from the build environment. The tests check mechanics and OpenCV parity, not biometric
   accuracy.
 * **No liveness check:** a printed palm photo could be accepted. Don't use this for access control as is.
-* **MCC is measured against the colour teachers' labels**, not human ground truth.
+* **MCC is measured against the colour teachers' labels**, not human ground truth. It shows `n/a` when
+  the val split has no frames without the class (or none with it); MCC is undefined then. Spend part
+  of **Collect** with no face or palm in view.
 * **The web UI has no login.** It binds to `127.0.0.1` by default. Keep it that way or put it behind
   authentication before exposing it, because it can enroll and delete people.
 * **INT8 results depend on the CPU.** The same INT8 model and input gave raw outputs up to 3.1 apart on

@@ -41,7 +41,9 @@ impl Source {
             // Windows camera from WSL2 (or native Windows): run Windows ffmpeg directly and read raw frames
             // from its stdout — no pipe file, no network, no firewall. Override the binary with PALMID_FFMPEG_WIN.
             binary = std::env::var("PALMID_FFMPEG_WIN").unwrap_or_else(|_| if cfg!(windows) { "ffmpeg".into() } else { "ffmpeg.exe".into() });
-            args.extend(["-f".to_string(), "dshow".into(), "-i".into(), format!("video={name}"), "-r".into(), "25".into()]);
+            // Ask the camera itself for WxH (e.g. 1280x720 on an FHD webcam) so palms carry real line detail,
+            // instead of capturing at its default and upscaling.
+            args.extend(["-f".to_string(), "dshow".into(), "-video_size".into(), format!("{w}x{h}"), "-i".into(), format!("video={name}"), "-r".into(), "25".into()]);
         } else if let Some(rest) = spec.strip_prefix("webcam") {
             let dev = rest.strip_prefix(':').filter(|d| !d.is_empty());
             let size = format!("{w}x{h}");

@@ -110,7 +110,7 @@ async fn controls(cx: &Cx) -> Result<impl View> {
     Ok(view! {
                         <div class="card controls">
                             <h2>"1 · Collect"</h2>
-                            <p class="hint">"Colour teachers (YuNet, MediaPipe palm) label frames; grayscale copies become the dataset. Show your face and open palms at different distances."</p>
+                            <p class="hint">"Colour teachers (YuNet, MediaPipe palm) label frames; grayscale copies become the dataset. Show your face and open palms at different distances, and spend part of the run with no face or palm in view (step aside, hands down) — those negatives are what make MCC meaningful."</p>
                             <label>"frames " <input size="6" :value=$(frames.get()) @input=$(|e: Event| frames.set(e.target.value))></label>
                             <button @click=$(async |_e| { let m = collect(frames.get()).await; msg.set(m); })>"Collect"</button>
 
@@ -245,12 +245,12 @@ async fn status_panels(cx: &Cx, s: Status) -> Result<impl View> {
                     <tr><th>"class"</th><th>"MCC (val)"</th><th>"τ"</th><th>"τ source"</th><th>"n cal"</th><th>"TP/FP/FN/TN"</th></tr>
                     for m in &t.metrics {
                         <tr>
-                            <td>(m.class.clone())</td><td><b>(format!("{:.3}", m.mcc))</b></td><td>(format!("{:.3}", m.tau))</td>
+                            <td>(m.class.clone())</td><td><b>(m.mcc.map_or("n/a".to_string(), |v| format!("{v:.3}")))</b></td><td>(format!("{:.3}", m.tau))</td>
                             <td>(m.tau_source.clone())</td><td>(m.n_cal)</td><td>(format!("{}/{}/{}/{}", m.tp, m.fp, m.fn_, m.tn))</td>
                         </tr>
                     }
                 </table>
-                <p class="hint">"MCC is frame-level presence vs the colour teachers' labels on the val split, not human ground truth."</p>
+                <p class="hint">"MCC is frame-level presence vs the colour teachers' labels on the val split, not human ground truth. n/a = the split had no frames without that class (or none with it), so MCC is undefined."</p>
             }
             <pre class="log">for line in &t.log { (line.clone()) "\n" }</pre>
         </div>

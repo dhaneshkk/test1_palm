@@ -80,7 +80,7 @@ pub struct ClassMetric {
     pub tau: f32,
     pub tau_source: String,
     pub n_cal: usize,
-    pub mcc: f64,
+    pub mcc: Option<f64>,
     pub tp: u64,
     pub fp: u64,
     pub fn_: u64,
@@ -351,7 +351,13 @@ impl App {
                     s.collect.split[si] += 1;
                     if done {
                         s.collect.active = false;
-                        s.collect.message = Some(if pc[1] < 30 { format!("done — only {} palm labels; show open palms more and collect again", pc[1]) } else { "done — ready to train".into() });
+                        s.collect.message = Some(if pc[1] < 30 {
+                            format!("done — only {} palm labels; show open palms more and collect again", pc[1])
+                        } else if pc[1] >= count || pc[0] >= count {
+                            "done — but every frame had a face or palm; MCC needs some frames without them (step away / hands down for part of the run)".into()
+                        } else {
+                            "done — ready to train".into()
+                        });
                     }
                 });
                 if done {
@@ -567,7 +573,7 @@ impl App {
         self.set_phase(Phase::Ready)?;
         lock(&self.0.rt).det = Some(det);
         lock(&self.0.rt).debounce = Debounce::default();
-        let summary = metrics.iter().map(|m| format!("{} MCC {:.3} (τ {:.3}, {})", m.class, m.mcc, m.tau, m.tau_source)).collect::<Vec<_>>().join("; ");
+        let summary = metrics.iter().map(|m| format!("{} MCC {} (τ {:.3}, {})", m.class, m.mcc.map_or("n/a".into(), |v| format!("{v:.3}")), m.tau, m.tau_source)).collect::<Vec<_>>().join("; ");
         self.update(|s| { s.train.metrics = metrics; s.model_loaded = Some(cfg.onnx().display().to_string()); });
         self.log(format!("model live: {summary}"));
         Ok(())
