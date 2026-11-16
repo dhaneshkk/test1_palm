@@ -83,7 +83,7 @@ not by the browser. Run the server on the laptop whose camera you want.
 
 | env | default | |
 |---|---|---|
-| `PALMID_SOURCE` | `webcam` | `webcam`, `webcam:/dev/video2`, a video file/URL (looped), or an image folder |
+| `PALMID_SOURCE` | `webcam` | `webcam`, `webcam:/dev/video2`, `dshow:<camera name>` (Windows ffmpeg, e.g. from WSL2), a video file/URL (looped), or an image folder |
 | `PALMID_WORK` | `palmid_work` | dataset, models, gallery |
 | `PALMID_WIDTH` / `PALMID_HEIGHT` | `640` / `480` | capture size |
 | `PALMID_PYTHON` / `PALMID_TRAINER` | `python3` / `trainer/train_student.py` | training job |
@@ -95,26 +95,24 @@ not by the browser. Run the server on the laptop whose camera you want.
 
 * **Clone inside the Linux filesystem** (`~/test1_palm`), not under `/mnt/c/…`. Cargo builds and
   Python imports are many times slower across the Windows drive mount.
-* **Camera:** WSL2 usually has no `/dev/video0`. Check with `ls /dev/video*`. If it's missing,
-  stream the camera from Windows into WSL with ffmpeg on the Windows side
-  (`winget install Gyan.FFmpeg`):
-
-  ```powershell
-  # Windows PowerShell: find the camera name, then serve it on TCP port 5056
-  ffmpeg -list_devices true -f dshow -i dummy
-  ffmpeg -f dshow -video_size 640x480 -framerate 30 -i video="Integrated Camera" `
-         -r 25 -c:v mpeg1video -q:v 4 -f mpegts "tcp://0.0.0.0:5056?listen=1"
-  ```
+* **Camera:** WSL2 usually has no `/dev/video0` (check with `ls /dev/video*`). Let palmid run the
+  **Windows** ffmpeg itself through WSL interop. No pipe file, no network, no firewall:
 
   ```bash
-  # WSL: the Windows host is the default gateway (NAT networking) or 127.0.0.1 (mirrored networking)
-  export PALMID_SOURCE=tcp://$(ip route show default | awk '{print $3}'):5056
+  # once, in Windows PowerShell: winget install Gyan.FFmpeg   (then open a new WSL terminal)
+  ffmpeg.exe -hide_banner -list_devices true -f dshow -i dummy      # find the "(video)" camera name
+  export PALMID_SOURCE="dshow:HP True Vision FHD Camera"             # your camera's name
   cargo run -p palmid-web --release
   ```
 
-  Allow ffmpeg through the Windows firewall if prompted. The Windows ffmpeg serves one connection, so
-  restart it if palmid-web is restarted. The stream is colour, so the teachers work during **Collect**.
-* Alternatively, run natively on Windows: `PALMID_SOURCE=webcam:<camera name>` uses ffmpeg's dshow input.
+  If `ffmpeg.exe` isn't on the WSL `PATH`, set `PALMID_FFMPEG_WIN` to its full path, for example
+  `/mnt/c/Users/<you>/AppData/Local/Microsoft/WinGet/Links/ffmpeg.exe`. If the feed shows a crossed-out
+  camera icon, the laptop's camera privacy key or shutter is on. If the camera reports "busy" after a
+  crash, end leftover processes with `taskkill.exe /IM ffmpeg.exe /F`.
+
+  A TCP stream also works (`PALMID_SOURCE=tcp://host:5056` with Windows ffmpeg serving
+  `-f mpegts "tcp://0.0.0.0:5056?listen=1"`), but WSL's NAT network usually needs a firewall rule.
+* Natively on Windows, `PALMID_SOURCE=dshow:<camera name>` works the same way.
 
 ### What the web app is made of
 

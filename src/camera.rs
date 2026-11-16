@@ -1,4 +1,5 @@
 //! Frame sources with no OpenCV dependency: webcam/file/RTSP decoded by an `ffmpeg` subprocess
+//! (`dshow:<camera name>` runs Windows `ffmpeg.exe`, e.g. from WSL2),
 //! straight to 8-bit grayscale (`-pix_fmt gray`), or a directory of images.
 
 use crate::imgproc::{GrayImage, RgbImage};
@@ -8,12 +9,13 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
 
 pub enum Source {
-    Ffmpeg { child: Child, out: ChildStdout, w: usize, h: usize, rgb: bool },
+    Ffmpeg { child: Child, out: Option<ChildStdout>, w: usize, h: usize, rgb: bool },
     Images { files: Vec<PathBuf>, i: usize },
 }
 
 impl Source {
-    /// `spec`: `webcam` / `webcam:<device>` (platform default input), a video file / URL, or an image directory.
+    /// `spec`: `webcam` / `webcam:<device>` (platform default input), `dshow:<camera name>` (Windows ffmpeg.exe,
+    /// works from WSL2), a video file / URL, or an image directory.
     pub fn open(spec: &str, w: usize, h: usize) -> Result<Self> {
         Self::open_with(spec, w, h, false)
     }
@@ -34,7 +36,13 @@ impl Source {
             return Ok(Source::Images { files, i: 0 });
         }
         let mut args: Vec<String> = vec!["-hide_banner".into(), "-loglevel".into(), "error".into()];
-        if let Some(rest) = spec.strip_prefix("webcam") {
+        let mut binary = "ffmpeg".to_string();
+        if let Some(name) = spec.strip_prefix("dshow:") {
+            // Windows camera from WSL2 (or native Windows): run Windows ffmpeg directly and read raw frames
+            // from its stdout — no pipe file, no network, no firewall. Override the binary with PALMID_FFMPEG_WIN.
+            binary = std::env::var("PALMID_FFMPEG_WIN").unwrap_or_else(|_| if cfg!(windows) { "ffmpeg".into() } else { "ffmpeg.exe".into() });
+            args.extend(["-f".to_string(), "dshow".into(), "-i".into(), format!("video={name}"), "-r".into(), "25".into()]);
+        } else if let Some(rest) = spec.strip_prefix("webcam") {
             let dev = rest.strip_prefix(':').filter(|d| !d.is_empty());
             let size = format!("{w}x{h}");
             if cfg!(target_os = "linux") {
@@ -49,9 +57,15 @@ impl Source {
             args.extend(["-stream_loop", "-1", "-i", spec].map(String::from));
         }
         args.extend(["-vf", &format!("scale={w}:{h}"), "-f", "rawvideo", "-pix_fmt", if rgb { "rgb24" } else { "gray" }, "-"].map(String::from));
-        let mut child = Command::new("ffmpeg").args(&args).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().context("spawning ffmpeg (is it installed?)")?;
+        let mut child = Command::new(&binary)
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .with_context(|| format!("spawning {binary} (is it installed and on PATH?)"))?;
         let out = child.stdout.take().ok_or_else(|| anyhow!("no ffmpeg stdout"))?;
-        Ok(Source::Ffmpeg { child, out, w, h, rgb })
+        Ok(Source::Ffmpeg { child, out: Some(out), w, h, rgb })
     }
 
     /// Next frame as grayscale.
@@ -59,7 +73,7 @@ impl Source {
         Ok(match self {
             Source::Ffmpeg { rgb: false, out, w, h, .. } => {
                 let mut buf = vec![0u8; *w * *h];
-                read_full(out, &mut buf)?.then(|| GrayImage { w: *w, h: *h, data: buf })
+                read_full(out.as_mut().ok_or_else(|| anyhow!("source closed"))?, &mut buf)?.then(|| GrayImage { w: *w, h: *h, data: buf })
             }
             _ => self.read_rgb()?.map(|f| f.to_gray()),
         })
@@ -73,7 +87,7 @@ impl Source {
                     return Err(anyhow!("source opened in gray mode; use Source::open_rgb"));
                 }
                 let mut buf = vec![0u8; *w * *h * 3];
-                Ok(read_full(out, &mut buf)?.then(|| RgbImage { w: *w, h: *h, data: buf }))
+                Ok(read_full(out.as_mut().ok_or_else(|| anyhow!("source closed"))?, &mut buf)?.then(|| RgbImage { w: *w, h: *h, data: buf }))
             }
             Source::Images { files, i } => {
                 if *i >= files.len() {
@@ -96,7 +110,10 @@ fn read_full(out: &mut ChildStdout, buf: &mut [u8]) -> Result<bool> {
 
 impl Drop for Source {
     fn drop(&mut self) {
-        if let Source::Ffmpeg { child, .. } = self {
+        if let Source::Ffmpeg { child, out, .. } = self {
+            // Close our end first: a Windows ffmpeg.exe behind WSL interop exits on the broken pipe
+            // even if the kill signal does not reach it.
+            drop(out.take());
             let _ = child.kill();
             let _ = child.wait();
         }
