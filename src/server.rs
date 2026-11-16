@@ -34,6 +34,43 @@ pub struct ObjectResult {
     pub candidates: Option<Vec<crate::gallery::Candidate>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// 21 hand landmarks for palm detections, when the hand-landmark model is loaded
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hand: Option<crate::handpose::HandPose>,
+}
+
+impl ObjectResult {
+    pub fn new(class: String, score: f32, bbox: [f32; 4]) -> Self {
+        Self { class, score, bbox, identity: None, candidates: None, note: None, hand: None }
+    }
+}
+
+/// Codes for a palm box: box ROI always, landmark-aligned ROI when a hand pose is found.
+pub fn palm_codes(
+    gray: &GrayImage,
+    bbox: [f32; 4],
+    coder: &PalmCoder,
+    hand: Option<&mut crate::handpose::HandLandmarker>,
+) -> Result<(crate::palmprint::PalmCodes, Option<crate::handpose::HandPose>)> {
+    palm_codes_for(gray, bbox, coder, hand, true, true)
+}
+
+/// As `palm_codes`, computing only the requested ROI modes (the hand pose is still estimated, for display).
+pub fn palm_codes_for(
+    gray: &GrayImage,
+    bbox: [f32; 4],
+    coder: &PalmCoder,
+    hand: Option<&mut crate::handpose::HandLandmarker>,
+    want_box: bool,
+    want_aligned: bool,
+) -> Result<(crate::palmprint::PalmCodes, Option<crate::handpose::HandPose>)> {
+    let pose = match hand {
+        Some(h) => h.landmarks(gray, bbox)?,
+        None => None,
+    };
+    let boxed = if want_box { coder.roi(gray, bbox).map(|r| coder.code(&r)) } else { None };
+    let aligned = if want_aligned { pose.as_ref().and_then(|p| coder.aligned_roi(gray, p)).map(|r| coder.code(&r)) } else { None };
+    Ok((crate::palmprint::PalmCodes { boxed, aligned }, pose))
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -49,6 +86,7 @@ pub struct Engine {
     pub debounce: Debounce,
     pub debounce_n: u32,
     pub debounce_k: u32,
+    pub hand: Option<crate::handpose::HandLandmarker>,
 }
 
 impl Engine {
@@ -58,16 +96,18 @@ impl Engine {
         let palm = self.det.meta.class_id("palm");
         let mut objects = Vec::new();
         for d in &dets {
-            let mut o = ObjectResult { class: self.det.meta.classes[d.cls].clone(), score: d.score, bbox: d.bbox, identity: None, candidates: None, note: None };
+            let mut o = ObjectResult::new(self.det.meta.classes[d.cls].clone(), d.score, d.bbox);
             if Some(d.cls) == palm {
-                match self.coder.roi(gray, d.bbox) {
-                    None => o.note = Some("palm too small or cut off — move closer".into()),
-                    Some(roi) => {
-                        let Identification { identity, candidates } = self.gallery.identify(&self.coder.code(&roi));
-                        let stable = self.debounce.update(&identity, self.debounce_n, self.debounce_k);
-                        o.identity = Some(if stable { identity } else { "pending".into() });
-                        o.candidates = Some(candidates);
-                    }
+                let (wb, wa) = self.gallery.modes_needed();
+                let (codes, pose) = palm_codes_for(gray, d.bbox, &self.coder, self.hand.as_mut(), wb || !wa, wa)?;
+                o.hand = pose;
+                if codes.boxed.is_none() && codes.aligned.is_none() {
+                    o.note = Some("palm too small or cut off — move closer".into());
+                } else {
+                    let Identification { identity, candidates } = self.gallery.identify_codes(&codes);
+                    let stable = self.debounce.update(&identity, self.debounce_n, self.debounce_k);
+                    o.identity = Some(if stable { identity } else { "pending".into() });
+                    o.candidates = Some(candidates);
                 }
             }
             objects.push(o);
@@ -78,7 +118,17 @@ impl Engine {
 
 /// Annotate a frame: faces white, palms light grey (thick), for the MJPEG view.
 pub fn annotate(gray: &GrayImage, dets: &[Detection], palm_cls: Option<usize>) -> GrayImage {
+    annotate_with(gray, dets, palm_cls, &[])
+}
+
+/// As `annotate`, plus hand skeletons.
+pub fn annotate_with(gray: &GrayImage, dets: &[Detection], palm_cls: Option<usize>, objects: &[ObjectResult]) -> GrayImage {
     let mut vis = gray.clone();
+    for o in objects {
+        if let Some(h) = &o.hand {
+            crate::handpose::draw_skeleton(&mut vis, h, 180, 255);
+        }
+    }
     for d in dets {
         let (v, t) = if Some(d.cls) == palm_cls { (200, 4) } else { (255, 2) };
         vis.draw_rect(d.bbox, v, t);

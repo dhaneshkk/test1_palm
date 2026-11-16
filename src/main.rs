@@ -7,7 +7,7 @@ use palmid::gallery::{Debounce, Gallery, GalleryConfig};
 use palmid::imgproc::GrayImage;
 use palmid::metrics;
 use palmid::palmprint::{Code, PalmCoder, PalmParams};
-use palmid::server::{annotate, router, AppState, Engine};
+use palmid::server::{router, AppState, Engine};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -90,6 +90,10 @@ fn engine(cli: &Cli) -> Result<Engine> {
         debounce: Debounce::default(),
         debounce_n: 6,
         debounce_k: 3,
+        hand: {
+            let p = cli.model.with_file_name("handpose.onnx");
+            if p.exists() { Some(palmid::handpose::HandLandmarker::new(&p, cli.threads)?) } else { None }
+        },
     })
 }
 
@@ -194,7 +198,7 @@ async fn main() -> Result<()> {
                     let (r, dets) = e.process(&g)?;
                     let palm = e.det.meta.class_id("palm");
                     drop(e);
-                    let _ = tx.send(Bytes::from(annotate(&g, &dets, palm).to_jpeg(80)));
+                    let _ = tx.send(Bytes::from(palmid::server::annotate_with(&g, &dets, palm, &r.objects).to_jpeg(80)));
                     n += 1;
                     for o in r.objects.iter().filter(|o| o.identity.as_deref().is_some_and(|i| i != "pending")) {
                         eprintln!("[live] palm → {}", o.identity.as_ref().unwrap());

@@ -130,6 +130,37 @@ impl GrayImage {
         out
     }
 
+    /// Draw a 1-px line (Bresenham), clipped to the image.
+    pub fn draw_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, v: u8) {
+        let (mut x, mut y, xe, ye) = (x0.round() as i64, y0.round() as i64, x1.round() as i64, y1.round() as i64);
+        let (dx, dy) = ((xe - x).abs(), -(ye - y).abs());
+        let (sx, sy) = (if x < xe { 1 } else { -1 }, if y < ye { 1 } else { -1 });
+        let mut err = dx + dy;
+        loop {
+            if x >= 0 && y >= 0 && (x as usize) < self.w && (y as usize) < self.h {
+                self.data[y as usize * self.w + x as usize] = v;
+            }
+            if x == xe && y == ye {
+                break;
+            }
+            let e2 = 2 * err;
+            if e2 >= dy { err += dy; x += sx; }
+            if e2 <= dx { err += dx; y += sy; }
+        }
+    }
+
+    /// Filled square dot of radius `r`, clipped.
+    pub fn draw_dot(&mut self, x: f32, y: f32, r: i64, v: u8) {
+        let (cx, cy) = (x.round() as i64, y.round() as i64);
+        for yy in cy - r..=cy + r {
+            for xx in cx - r..=cx + r {
+                if xx >= 0 && yy >= 0 && (xx as usize) < self.w && (yy as usize) < self.h {
+                    self.data[yy as usize * self.w + xx as usize] = v;
+                }
+            }
+        }
+    }
+
     /// Draw a hollow rectangle (thickness `t`) with grey level `v` — used for the live MJPEG view.
     pub fn draw_rect(&mut self, b: [f32; 4], v: u8, t: usize) {
         let x0 = (b[0].max(0.0) as usize).min(self.w.saturating_sub(1));

@@ -86,7 +86,7 @@ pub async fn dashboard(cx: &Cx) -> Result<impl View> {
                 <main>
                     <section class="feed-col">
                         video()
-                        <p class="hint">"Faces: thin white boxes. Palms: thick grey boxes. Everything below runs on the grayscale frame."</p>
+                        <p class="hint">"Faces: thin white boxes. Palms: thick grey boxes with the 21-point hand skeleton. Everything runs on the grayscale frame."</p>
                     </section>
                     <section class="side">
                         controls()
@@ -209,6 +209,7 @@ async fn status_panels(cx: &Cx, s: Status) -> Result<impl View> {
                 <span>"fps"</span><b>(format!("{:.1}", s.camera.fps))</b>
                 <span>"frame"</span><b>(format!("{:.1} ms", s.camera.frame_ms))</b>
                 <span>"model"</span><b>(s.model_loaded.clone().unwrap_or_else(|| "none yet".into()))</b>
+                <span>"hand landmarks"</span><b>(s.hand_model.clone().unwrap_or_else(|| "—".into()))</b>
             </div>
             if let Some(e) = &s.camera.error { <p class="err">(e.clone())</p> }
             <ul class="objs">
@@ -216,6 +217,7 @@ async fn status_panels(cx: &Cx, s: Status) -> Result<impl View> {
                     <li>
                         <b>(o.class.clone())</b> " " (format!("{:.2}", o.score))
                         if let Some(id) = &o.identity { " → " <b class="id">(id.clone())</b> }
+                        if let Some(h) = &o.hand { " · 21 landmarks " (format!("{:.2}", h.confidence)) }
                         if let Some(n) = &o.note { " · " <i>(n.clone())</i> }
                     </li>
                 }
@@ -263,7 +265,7 @@ async fn status_panels(cx: &Cx, s: Status) -> Result<impl View> {
             }
             if let Some((n, o)) = &s.enroll.last {
                 if o.enrolled {
-                    <p class="ok">"enrolled " (n.clone()) " · τ " (format!("{:.3}", o.tau)) " vs chance " (format!("{:.3}", o.chance)) " · " (o.source.clone())</p>
+                    <p class="ok">"enrolled " (n.clone()) " · τ " (format!("{:.3}", o.tau)) " vs chance " (format!("{:.3}", o.chance)) " · " (o.source.clone()) " · ROI " (format!("{:?}", o.roi).to_lowercase())</p>
                 } else {
                     <p class="err">(n.clone()) ": not enrolled — " (o.reason.clone().unwrap_or_default()) " (τ " (format!("{:.3}", o.tau)) ", chance " (format!("{:.3}", o.chance)) ")"</p>
                 }

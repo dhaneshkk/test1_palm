@@ -6,7 +6,7 @@
 //!   texture was not resolved and a threshold would accept everyone — enrollment is refused.
 
 use crate::lean_mirror::{accept, closer, conf_rank, step, N_CAL_FORMAL_BOUND};
-use crate::palmprint::{code_distance, Code};
+use crate::palmprint::{code_distance, Code, PalmCodes, RoiMode};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -21,6 +21,9 @@ pub struct Identity {
     pub chance: f64,
     pub n_cal: usize,
     pub source: String,
+    /// ROI cut used at enrollment; probes are coded the same way. Older galleries default to `box`.
+    #[serde(default)]
+    pub roi: RoiMode,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -32,6 +35,7 @@ pub struct EnrollOutcome {
     pub n_cal: usize,
     pub genuine_median: Option<f64>,
     pub source: String,
+    pub roi: RoiMode,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -112,12 +116,22 @@ impl Gallery {
         Ok(had)
     }
 
+    /// Which ROI modes the enrolled people need: (box, landmarks).
+    pub fn modes_needed(&self) -> (bool, bool) {
+        (self.people.values().any(|p| p.roi == RoiMode::Box), self.people.values().any(|p| p.roi == RoiMode::Landmarks))
+    }
+
     pub fn templates(&self, id: &Identity) -> Vec<Code> {
         id.templates.iter().map(|s| decode(s, id.code_h, id.code_w)).collect()
     }
 
     /// `consent` must be true: enrollment is only for people who agreed to it.
     pub fn enroll(&mut self, name: &str, codes: &[Code], consent: bool) -> Result<EnrollOutcome> {
+        self.enroll_with(name, codes, consent, RoiMode::Box)
+    }
+
+    /// Enroll with codes all cut by `roi` (box or landmark-aligned).
+    pub fn enroll_with(&mut self, name: &str, codes: &[Code], consent: bool, roi: RoiMode) -> Result<EnrollOutcome> {
         if !consent {
             bail!("enrollment requires the person's explicit consent");
         }
@@ -154,22 +168,29 @@ impl Gallery {
             return Ok(EnrollOutcome {
                 enrolled: false,
                 reason: Some("palm texture not resolved (move closer / more light / sharper focus)".into()),
-                tau, chance, n_cal: n, genuine_median, source,
+                tau, chance, n_cal: n, genuine_median, source, roi,
             });
         }
         self.people.insert(
             name.to_string(),
-            Identity { templates: gal.iter().map(encode).collect(), code_h: gal[0].h, code_w: gal[0].w, tau, chance, n_cal: n, source: source.clone() },
+            Identity { templates: gal.iter().map(encode).collect(), code_h: gal[0].h, code_w: gal[0].w, tau, chance, n_cal: n, source: source.clone(), roi },
         );
         self.save()?;
-        Ok(EnrollOutcome { enrolled: true, reason: None, tau, chance, n_cal: n, genuine_median, source })
+        Ok(EnrollOutcome { enrolled: true, reason: None, tau, chance, n_cal: n, genuine_median, source, roi })
     }
 
     /// Open-set: accept person p iff d_p ≤ τ_p; among accepted, smallest d_p/τ_p wins (division-free).
     pub fn identify(&self, code: &Code) -> Identification {
+        self.identify_codes(&PalmCodes { boxed: Some(code.clone()), aligned: Some(code.clone()) })
+    }
+
+    /// As `identify`, comparing each person with the probe code cut the way they were enrolled.
+    /// People whose ROI mode could not be computed for this frame are skipped.
+    pub fn identify_codes(&self, codes: &PalmCodes) -> Identification {
         let mut best: Option<(String, f64, f64)> = None;
         let mut candidates = Vec::new();
         for (name, id) in &self.people {
+            let Some(code) = codes.get(id.roi) else { continue };
             let d = self.templates(id).iter().map(|t| code_distance(code, t, self.cfg.shift)).fold(1.0, f64::min);
             candidates.push(Candidate { name: name.clone(), dist: d, tau: id.tau });
             if accept(d, id.tau) && best.as_ref().map_or(true, |(_, bd, bt)| closer(d, id.tau, *bd, *bt)) {

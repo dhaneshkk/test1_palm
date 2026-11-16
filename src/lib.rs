@@ -9,6 +9,7 @@
 
 pub mod detector;
 pub mod gallery;
+pub mod handpose;
 pub mod imgproc;
 pub mod lean_mirror;
 pub mod metrics;

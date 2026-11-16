@@ -11,8 +11,9 @@ use palmid::gallery::{Debounce, EnrollOutcome, Gallery, GalleryConfig};
 use palmid::imgproc::{GrayImage, RgbImage};
 use palmid::lean_mirror::{Phase, can_transition};
 use palmid::metrics;
-use palmid::palmprint::{Code, PalmCoder, PalmParams};
-use palmid::server::ObjectResult;
+use palmid::handpose::{HandLandmarker, HANDPOSE_URL};
+use palmid::palmprint::{Code, PalmCoder, PalmParams, RoiMode};
+use palmid::server::{palm_codes, palm_codes_for, ObjectResult};
 use palmid::teachers::{PALM_URL, Teachers, YUNET_URL};
 use serde::Serialize;
 use std::collections::VecDeque;
@@ -137,6 +138,8 @@ pub struct Status {
     pub train: TrainStatus,
     pub enroll: EnrollStatus,
     pub model_loaded: Option<String>,
+    /// 21-point hand-landmark model: "loaded", "downloading…" or an error
+    pub hand_model: Option<String>,
     pub people: Vec<Person>,
 }
 
@@ -146,7 +149,7 @@ const ENROLL_FRAME_BUDGET: usize = 450;
 enum Mode {
     Infer,
     Collect { writer: DatasetWriter, target: usize },
-    Enroll { name: String, target: usize, codes: Vec<Code>, seen: usize },
+    Enroll { name: String, target: usize, codes: Vec<Code>, seen: usize, roi: Option<RoiMode> },
 }
 
 pub struct Runtime {
@@ -154,6 +157,7 @@ pub struct Runtime {
     pub coder: PalmCoder,
     pub gallery: Gallery,
     pub debounce: Debounce,
+    pub hand: Option<HandLandmarker>,
 }
 
 impl Runtime {
@@ -164,16 +168,18 @@ impl Runtime {
         let palm = det.meta.class_id("palm");
         let mut out = vec![];
         for d in &dets {
-            let mut o = ObjectResult { class: det.meta.classes[d.cls].clone(), score: d.score, bbox: d.bbox, identity: None, candidates: None, note: None };
+            let mut o = ObjectResult::new(det.meta.classes[d.cls].clone(), d.score, d.bbox);
             if Some(d.cls) == palm {
-                match self.coder.roi(gray, d.bbox) {
-                    None => o.note = Some("move closer".into()),
-                    Some(roi) => {
-                        let id = self.gallery.identify(&self.coder.code(&roi));
-                        let stable = self.debounce.update(&id.identity, 6, 3);
-                        o.identity = Some(if stable { id.identity } else { "pending".into() });
-                        o.candidates = Some(id.candidates);
-                    }
+                let (wb, wa) = self.gallery.modes_needed();
+                let (codes, pose) = palm_codes_for(gray, d.bbox, &self.coder, self.hand.as_mut(), wb || !wa, wa)?;
+                o.hand = pose;
+                if codes.boxed.is_none() && codes.aligned.is_none() {
+                    o.note = Some("move closer".into());
+                } else {
+                    let id = self.gallery.identify_codes(&codes);
+                    let stable = self.debounce.update(&id.identity, 6, 3);
+                    o.identity = Some(if stable { id.identity } else { "pending".into() });
+                    o.candidates = Some(id.candidates);
                 }
             }
             out.push(o);
@@ -225,7 +231,7 @@ impl App {
             None
         };
         let app = App(Arc::new(Inner {
-            rt: Mutex::new(Runtime { det, coder: PalmCoder::new(PalmParams::default()), gallery, debounce: Debounce::default() }),
+            rt: Mutex::new(Runtime { det, coder: PalmCoder::new(PalmParams::default()), gallery, debounce: Debounce::default(), hand: None }),
             cfg,
             status: Mutex::new(status),
             mode: Mutex::new(Mode::Infer),
@@ -237,7 +243,32 @@ impl App {
             child_pid: Mutex::new(None),
         }));
         app.refresh_people();
+        app.spawn_hand_model();
         Ok(app)
+    }
+
+    /// Load (downloading on first run) the 21-point hand-landmark model in the background.
+    fn spawn_hand_model(&self) {
+        let app = self.clone();
+        std::thread::spawn(move || {
+            let path = app.0.cfg.models().join("handpose.onnx");
+            if !path.exists() {
+                app.update(|s| s.hand_model = Some("downloading…".into()));
+                let ok = std::process::Command::new("curl").args(["-fsSL", "-o"]).arg(&path).arg(HANDPOSE_URL).status().map(|s| s.success()).unwrap_or(false);
+                if !ok {
+                    let _ = std::fs::remove_file(&path);
+                    app.update(|s| s.hand_model = Some("download failed — palms work without landmarks".into()));
+                    return;
+                }
+            }
+            match HandLandmarker::new(&path, app.0.cfg.threads) {
+                Ok(h) => {
+                    lock(&app.0.rt).hand = Some(h);
+                    app.update(|s| s.hand_model = Some("loaded".into()));
+                }
+                Err(e) => app.update(|s| s.hand_model = Some(format!("failed: {e:#}"))),
+            }
+        });
     }
 
     pub fn status(&self) -> Status {
@@ -307,6 +338,11 @@ impl App {
             for (b, v, w) in boxes {
                 vis.draw_rect(b, v, w);
             }
+            for o in &objects {
+                if let Some(h) = &o.hand {
+                    palmid::handpose::draw_skeleton(&mut vis, h, 180, 255);
+                }
+            }
             *lock(&self.0.frame) = Arc::new(vis.to_jpeg(75));
             self.0.frame_tx.send_modify(|v| *v += 1);
             n += 1;
@@ -363,36 +399,51 @@ impl App {
                 if done {
                     let _ = self.set_phase(Phase::Collected);
                 }
-                let objs = boxes.iter().map(|(c, b)| ObjectResult { class: ["face", "palm"][*c].into(), score: 1.0, bbox: *b, identity: None, candidates: None, note: Some("teacher".into()) }).collect();
+                let objs = boxes
+                    .iter()
+                    .map(|(c, b)| {
+                        let mut o = ObjectResult::new(["face", "palm"][*c].into(), 1.0, *b);
+                        o.note = Some("teacher".into());
+                        o
+                    })
+                    .collect();
                 Ok((objs, boxes.iter().map(|(c, b)| (*b, if *c == 1 { 200 } else { 255 }, 2)).collect()))
             }
-            Mode::Enroll { name, target, codes, seen } => {
+            Mode::Enroll { name, target, codes, seen, roi } => {
                 *seen += 1;
                 let seen_now = *seen;
                 let mut rt = lock(&self.0.rt);
-                let det = rt.det.as_mut().ok_or_else(|| anyhow!("no model"))?;
+                let Runtime { det, coder, hand, .. } = &mut *rt;
+                let det = det.as_mut().ok_or_else(|| anyhow!("no model"))?;
                 let palm = det.meta.class_id("palm").ok_or_else(|| anyhow!("model has no palm class"))?;
                 let dets = det.detect(gray)?;
                 let best = dets.iter().filter(|d| d.cls == palm).max_by(|a, b| area(a).partial_cmp(&area(b)).unwrap()).cloned();
                 let mut small = false;
+                let mut pose_drawn = None;
                 if let Some(d) = &best {
-                    match rt.coder.roi(gray, d.bbox) {
-                        Some(roi) => codes.push(rt.coder.code(&roi)),
+                    let (pc, pose) = palm_codes(gray, d.bbox, coder, hand.as_mut())?;
+                    pose_drawn = pose;
+                    // the first usable frame fixes the ROI mode for this person (landmarks preferred)
+                    if roi.is_none() {
+                        *roi = pc.preferred().map(|(m, _)| m);
+                    }
+                    match roi.and_then(|m| pc.get(m).cloned()) {
+                        Some(c) => codes.push(c),
                         None => small = true,
                     }
                 }
-                let (n, target_v, name_v) = (codes.len(), *target, name.clone());
+                let (n, target_v, name_v, roi_v) = (codes.len(), *target, name.clone(), roi.unwrap_or_default());
                 let mut outcome = None;
                 if n >= target_v {
                     let all = std::mem::take(codes);
                     *mode = Mode::Infer;
-                    outcome = Some(rt.gallery.enroll(&name_v, &all, true)?);
+                    outcome = Some(rt.gallery.enroll_with(&name_v, &all, true, roi_v)?);
                 } else if seen_now >= ENROLL_FRAME_BUDGET {
                     *mode = Mode::Infer;
                     outcome = Some(EnrollOutcome {
                         enrolled: false,
                         reason: Some(format!("only {n} usable palm views in {seen_now} frames — move closer, add light, or train the model longer")),
-                        tau: 0.0, chance: 0.0, n_cal: 0, genuine_median: None, source: "timeout".into(),
+                        tau: 0.0, chance: 0.0, n_cal: 0, genuine_median: None, source: "timeout".into(), roi: roi_v,
                     });
                 }
                 drop(rt);
@@ -408,7 +459,13 @@ impl App {
                 if outcome.is_some() {
                     self.refresh_people();
                 }
-                Ok((vec![], best.map(|d| vec![(d.bbox, 200, 4)]).unwrap_or_default()))
+                let mut objs = vec![];
+                if let Some(d) = &best {
+                    let mut o = ObjectResult::new("palm".into(), d.score, d.bbox);
+                    o.hand = pose_drawn;
+                    objs.push(o);
+                }
+                Ok((objs, best.map(|d| vec![(d.bbox, 200, 4)]).unwrap_or_default()))
             }
         }
     }
@@ -459,7 +516,7 @@ impl App {
         if !matches!(*mode, Mode::Infer) {
             bail!("busy (collecting or enrolling)");
         }
-        *mode = Mode::Enroll { name: name.clone(), target: 40, codes: vec![], seen: 0 };
+        *mode = Mode::Enroll { name: name.clone(), target: 40, codes: vec![], seen: 0, roi: None };
         drop(mode);
         self.update(|s| s.enroll = EnrollStatus { active: true, name: name.clone(), target: 40, ..Default::default() });
         Ok(format!("enrolling {name}: hold one open palm 25–40 cm from the camera"))

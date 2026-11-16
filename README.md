@@ -41,6 +41,15 @@ the teachers and YOLOX-Nano is trained on the grayscale copies. Everything at ru
   can be deleted at any time.
 * **Resolution:** a webcam resolves palm principal lines and creases, **not friction ridges**
   (those need ~500 dpi contact scanners).
+* **Hand landmarks:** for each palm detection, MediaPipe's 21-point hand-landmark model
+  (opencv_zoo, Apache-2.0) runs on the grayscale crop. It draws the hand skeleton on the live view and
+  gives a palm crop **aligned to the hand**: rotated along the wrist→middle-knuckle axis and scaled to
+  the knuckle width. New enrollments use that aligned crop when landmarks are available; people
+  enrolled earlier keep the box crop. Each person's crop mode is stored in the gallery and probes are
+  cut the same way. The model downloads automatically on first start of the web app; for the CLI,
+  put `handpose.onnx` next to `--model`. On grayscale crops, measured on 54 hands: mean confidence 0.93
+  (colour 0.97), landmarks within about 5 % of palm size of the colour result. The palm box has no
+  rotation keypoints, so the hand is assumed roughly upright.
 * **Safety gate:** if a person's genuine distances aren't clearly below chance (shuffled-code
   distance − 0.06), the palm texture wasn't resolved and any threshold would accept everyone, so
   enrollment is **refused** with a "move closer / more light" message.
@@ -254,6 +263,8 @@ brute-force checks of each theorem statement.
 | decode + NMS vs notebook | identical detections |
 | colour teachers vs OpenCV FaceDetectorYN / notebook palm decode | IoU 1.0000 |
 | RGB→gray vs `cvtColor` | identical over all 2²⁴ colours |
+| 21 hand landmarks vs the opencv_zoo procedure (upright variant) | identical (worst 0.000 px; needs `PALMID_HANDPOSE`) |
+| fast CompCode (responses only at the 28×28 sample points) vs full filter2d | bit-identical |
 | enrollment / identification (synthetic palm-line images) | 20/20 genuine accepted ×2, 0/20 unenrolled accepted, noise refused |
 
 * Model tests need `ORT_DYLIB_PATH` and are skipped without it.
@@ -293,6 +304,7 @@ On a 2-vCPU Xeon sandbox (no GPU):
 | | |
 |---|---|
 | CLI, release build, 4 threads | about 25–45 ms per 640×480 frame end to end (detection + palm code); live loop about 24 fps from a video file |
+| with hand landmarks | about 88 ms per frame with ~1.2 palms per frame (detection + 21 landmarks + palm code) |
 | web app, collection | about 3–4 frames/s with both colour teachers (100 frames in 33 s) |
 | web app, training | 3 epochs on 60 frames: 66 s; 8 epochs on 180 frames, 2 threads: about 30 min |
 | API on the live model | 90–140 ms per request including JPEG/PNG decode |
