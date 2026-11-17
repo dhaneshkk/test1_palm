@@ -1,7 +1,12 @@
 # palmid
 
-Monochrome laptop-camera **face + palm detection** and **consent-based palmprint identification**,
-running on CPU. Three ways to use it:
+Monochrome laptop-camera **face + palm detection**, **consent-based palmprint identification**,
+**hand landmarks with Chinese finger numbers 1–10** and a **468-point face mesh**, all on CPU.
+
+**New here? Read the [user guide](USER_GUIDE.md)**: install, collect, train, enroll, finger numbers,
+API and troubleshooting, step by step. This README covers how it works and how it is tested.
+
+Three ways to use it:
 
 | | What | Where |
 |---|---|---|
@@ -34,49 +39,41 @@ the teachers and YOLOX-Nano is trained on the grayscale copies. Everything at ru
 
 ## What it does and does not do
 
-* **Faces:** detection only. No face recognition.
-* **Palms:** identification of **enrolled people only**, each enrolled with explicit consent
-  (`--consent yes` in the CLI, a consent checkbox in the web app). Anyone else is `unknown`.
-  The gallery stores CompCode orientation codes (one digit 0–5 per cell), never images, and a person
-  can be deleted at any time.
-* **Resolution:** a webcam resolves palm principal lines and creases, **not friction ridges**
-  (those need ~500 dpi contact scanners).
-* **Hand landmarks:** for each palm detection, MediaPipe's 21-point hand-landmark model
-  (opencv_zoo, Apache-2.0) runs on the grayscale crop. It draws the hand skeleton on the live view and
-  gives a palm crop **aligned to the hand**: rotated along the wrist→middle-knuckle axis and scaled to
-  the knuckle width. New enrollments use that aligned crop when landmarks are available; people
-  enrolled earlier keep the box crop. Each person's crop mode is stored in the gallery and probes are
-  cut the same way. The model downloads automatically on first start of the web app; for the CLI,
-  put `handpose.onnx` next to `--model`. On grayscale crops, measured on 54 hands: mean confidence 0.93
-  (colour 0.97), landmarks within about 5 % of palm size of the colour result. The palm box has no
-  rotation keypoints, so the hand is assumed roughly upright.
-* **Chinese finger numbers (1–10):** read from the 21 hand landmarks with geometric rules
-  (`src/fingernum.rs`, no training): finger extension from 3-D joint angles in a hand-centred frame,
-  so position, scale, in-plane rotation and left/right hand don't matter. 7 = thumb, index and
-  middle tips pinched; 9 = hooked index; 10 = fist or crossed index and middle; 3 accepts both the
-  index-middle-ring and middle-ring-pinky forms. The live view reports a number once it holds for 6
-  of the last 8 frames (Lean §8 proves two numbers can never both qualify). Palm detectors rarely
-  fire on fists and pinches, so when the detector drops a hand the app keeps following it with the
-  landmark model alone (box re-derived from the last landmarks; the model's confidence ends the
-  track). Checked: 960 synthetic poses (5 rotations × 2 scales × mirrored × noise) all correct; on
-  the opencv_zoo demo clip, 45 of 47 detected open hands read 5 (2 read 4: thumb close to the palm)
-  and the closing hands, followed by landmarks, read 10 once closed (half-closed frames give no
-  number). Not yet measured on labelled real gestures, so 6–9 on real hands are unverified.
-  **Measuring it on your hands:** in the web app, section "4 · Finger numbers", type a number,
-  press Record and hold the gesture (60 frames with a hand are saved as landmarks, no images, to
-  `$PALMID_WORK/finger_recordings.jsonl`); repeat for each number, then press Score for per-number
-  recall, precision and MCC plus the multiclass MCC over 1–10 and "no number". The same file scores
-  from the command line with `palmid fingers-eval $PALMID_WORK/finger_recordings.jsonl`.
-* **Face mesh:** for each face detection, MediaPipe's face-landmark model (468 points, Apache-2.0)
-  runs on the grayscale crop, and the points are joined by a Delaunay triangulation on the live view
-  (the dense, licence-clean version of a dlib 68-point mesh). The model is converted from the
-  `mediapipe` 0.10.14 wheel to ONNX and **embedded in the binaries** (2.4 MB), so nothing downloads;
-  `PALMID_FACEMESH=<file.onnx>` overrides it. It is display only: faces are not identified. Measured
-  on 16 face crops: presence 1.00 on grayscale, points within 1.4 % of the inter-ocular distance of
-  the colour result. Faces are assumed upright. See `assets/models/NOTICE-face_landmark.md`.
-* **Safety gate:** if a person's genuine distances aren't clearly below chance (shuffled-code
-  distance − 0.06), the palm texture wasn't resolved and any threshold would accept everyone, so
-  enrollment is **refused** with a "move closer / more light" message.
+| Feature | What it does | Limits |
+|---|---|---|
+| **Faces** | detection, plus a 468-point mesh joined by Delaunay triangles | no face recognition; mesh assumes an upright face |
+| **Palms** | detection and identification of **enrolled people only**, each enrolled with explicit consent (`--consent yes` in the CLI, a checkbox in the web app); anyone else is `unknown` | palm lines and creases only, **not friction ridges** (those need ~500 dpi contact scanners); no liveness check |
+| **Gallery** | CompCode orientation codes (one digit 0–5 per cell), never images; delete a person at any time | — |
+| **Hand landmarks** | 21 points per palm, hand skeleton on the live view, and a palm crop aligned to the hand for enrollment and matching | hand assumed roughly upright |
+| **Finger numbers** | Chinese one-hand numbers 1–10 from the landmarks, held for 6 of 8 frames before shown; follows a hand by landmarks when the detector drops it (fists, pinches) | 6–9 not yet measured on labelled real hands (the web app can record and score them) |
+| **Safety gate** | refuses enrollment when a person's palm samples aren't clearly more alike than random palms (shuffled-code distance − 0.06), because any threshold would then accept everyone | — |
+
+Details:
+
+* **Hand landmarks:** MediaPipe's 21-point hand-landmark model (opencv_zoo, Apache-2.0) runs on the
+  grayscale crop of each palm. The aligned crop is rotated along the wrist→middle-knuckle axis and
+  scaled to the knuckle width. New enrollments use it when landmarks are available; people enrolled
+  earlier keep the box crop, and each person's crop mode is stored so probes are cut the same way. The
+  model downloads on first start of the web app; for the CLI, put `handpose.onnx` next to `--model`.
+  On 54 grayscale hands: mean confidence 0.93 (colour 0.97), landmarks within about 5 % of palm size of
+  the colour result.
+* **Finger numbers** (`src/fingernum.rs`, geometric rules, no training): finger extension from 3-D
+  joint angles in a hand-centred frame, so position, scale, in-plane rotation and left/right hand don't
+  matter. 7 = thumb, index and middle tips pinched; 9 = hooked index; 10 = fist or crossed index and
+  middle; 3 accepts index-middle-ring and middle-ring-little. Two numbers can never both pass the
+  6-of-8 stabiliser (Lean §8). Checked: 960 synthetic poses all correct; on the opencv_zoo demo clip
+  45 of 47 open hands read 5 (2 read 4, thumb close to the palm), and closing hands followed by
+  landmarks read 10 once closed (half-closed frames give no number). **Record and score your own
+  hands** in the web app (section 4) or with `palmid fingers-eval <recordings.jsonl>`: per-number
+  recall, precision and MCC, and the multiclass MCC over 1–10 plus "no number".
+* **Face mesh:** MediaPipe's face-landmark model (468 points, Apache-2.0), converted from the
+  `mediapipe` 0.10.14 wheel to ONNX and **embedded in the binaries** (2.4 MB; `PALMID_FACEMESH=<file>`
+  overrides it). On 16 face crops: presence 1.00 on grayscale, points within 1.4 % of the inter-ocular
+  distance of the colour result. See `assets/models/NOTICE-face_landmark.md`.
+
+The same palm-ridge code, face detector and face mesh are reused by
+[palm-recognition-prototype](https://github.com/dhaneshkk/palm-recognition-prototype) (branch
+`rust-inference`) as a Cargo dependency.
 
 See [Limitations](#limitations) before relying on any of it.
 
@@ -193,6 +190,7 @@ $B delete --name dhanesh
 $B detect some.jpg other.png
 $B calibrate --data path/to/yolo_data --split cal               # re-derive per-class τ, rewrites --meta
 $B eval --data path/to/yolo_data --split val                    # frame-level MCC per class
+$B fingers-eval palmid_work/finger_recordings.jsonl             # score labelled finger-number recordings
 ```
 
 The CLI reads `models/palmid_int8.onnx`, `models/palmid_model.json` and `palm_gallery.json` by
@@ -218,9 +216,10 @@ curl -s localhost:8361/v1/chat/completions -H 'content-type: application/json' -
     {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,'"$(base64 -w0 frame.jpg)"'"}}]}]}'
 ```
 
-`choices[0].message.content` is a JSON string: per object `class`, `score`, `bbox`, and for palms
-`identity` (`name` / `unknown` / `pending` until 3 of the last 6 frames agree) plus per-person
-distances. A request with no image returns the current status (phase, model, enrolled names, metrics).
+`choices[0].message.content` is a JSON string: per object `class`, `score`, `bbox`; for palms
+`identity` (`name` / `unknown` / `pending` until 3 of the last 6 frames agree) with per-person
+distances, `hand` (21 landmarks) and `finger_number` (value, rule, extended fingers); for faces
+`face_mesh` (468 points and presence). A request with no image returns the current status (phase, model, enrolled names, metrics).
 
 ## Training without the web app
 
@@ -248,7 +247,7 @@ boxes. Use more frames and epochs, a smaller batch, or a GPU.
 
 | Path | Contents |
 |---|---|
-| `src/` | `palmid` library and CLI: preprocessing, detector, teachers, palmprint, gallery, metrics, dataset writer, camera, API server, Lean mirrors |
+| `src/` | `palmid` library and CLI: preprocessing, detector, teachers, palmprint, gallery, hand landmarks, finger numbers, face mesh + Delaunay, metrics, dataset writer, camera, API server, Lean mirrors |
 | `web/` | `palmid-web` Topcoat app (state, camera loop, training job, UI, API) |
 | `trainer/` | `train_student.py` (SAM YOLOX-Nano trainer) and `requirements.txt` |
 | `notebooks/` | original single-cell Colab notebook |
@@ -258,6 +257,7 @@ boxes. Use more frames and epochs, a smaller batch, or a GPU.
 | `assets/models/` | embedded face-landmark ONNX and its licence notice |
 | `models/` | default location for CLI models (not committed) |
 | `docs/` | screenshot |
+| `USER_GUIDE.md` | step-by-step guide for running the app |
 
 ## Formal guarantees and tests
 
@@ -321,6 +321,8 @@ reference fixtures on the runner first, because INT8 kernels differ across CPUs 
 * **MCC is measured against the colour teachers' labels**, not human ground truth. It shows `n/a` when
   the val split has no frames without the class (or none with it); MCC is undefined then. Spend part
   of **Collect** with no face or palm in view.
+* **Finger numbers 6–9 are unverified on real hands**, and every hand-based feature assumes a roughly
+  upright hand (the landmark model's crop has no rotation).
 * **The web UI has no login.** It binds to `127.0.0.1` by default. Keep it that way or put it behind
   authentication before exposing it, because it can enroll and delete people.
 * **INT8 results depend on the CPU.** The same INT8 model and input gave raw outputs up to 3.1 apart on
