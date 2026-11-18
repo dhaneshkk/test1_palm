@@ -13,12 +13,13 @@ the [README](README.md).
 * [7. Step 2: Train](#7-step-2-train)
 * [8. Step 3: Enroll a person](#8-step-3-enroll-a-person)
 * [9. Live identification](#9-live-identification)
-* [10. Chinese finger numbers](#10-chinese-finger-numbers)
-* [11. Face mesh](#11-face-mesh)
-* [12. Using the API](#12-using-the-api)
-* [13. Command line instead of the web app](#13-command-line-instead-of-the-web-app)
-* [14. Troubleshooting](#14-troubleshooting)
-* [15. Privacy and safe use](#15-privacy-and-safe-use)
+* [10. Second-factor verification](#10-second-factor-verification)
+* [11. Chinese finger numbers](#11-chinese-finger-numbers)
+* [12. Face mesh](#12-face-mesh)
+* [13. Using the API](#13-using-the-api)
+* [14. Command line instead of the web app](#14-command-line-instead-of-the-web-app)
+* [15. Troubleshooting](#15-troubleshooting)
+* [16. Privacy and safe use](#16-privacy-and-safe-use)
 
 ---
 
@@ -32,7 +33,8 @@ palmid watches a **black-and-white** (grayscale) camera feed and:
 | Find **palms**, draw the 21-point hand skeleton | Read fingerprints or friction ridges (a webcam is far too coarse) |
 | **Identify enrolled people by their palm lines**, if they agreed to enroll | Identify anyone who isn't enrolled: they show as `unknown` |
 | Read **Chinese one-hand numbers 1–10** from your hand | Check that a palm is real (a printed photo could pass) |
-| Answer the same questions over an OpenAI-style HTTP API | Work as access control as it is |
+| Verify a **claimed person** as a second login factor: palm 1:1 + random finger numbers, lockout, fallback code | Work as access control on its own (no certified liveness) |
+| Answer the same questions over an OpenAI-style HTTP API | |
 
 Everything runs on the CPU. No images of palms are stored: the gallery keeps only number codes of the
 palm lines, and a person can be deleted at any time.
@@ -147,7 +149,7 @@ You can collect more than once; new frames are added.
 4. **Cancel** stops training; the previous model keeps running.
 
 **How long?** On a 2-core laptop CPU, 8 epochs on 180 frames took about 30 minutes, and that was too
-little: palms were missed. Plan for more frames and epochs, or train on a machine with a GPU (§13).
+little: palms were missed. Plan for more frames and epochs, or train on a machine with a GPU (§14).
 
 **Reading the quality table:**
 
@@ -189,7 +191,64 @@ Once someone is enrolled, a palm in view shows one of:
 
 Hold the palm the same way as during enrollment: same hand, open, similar distance.
 
-## 10. Chinese finger numbers
+## 10. Second-factor verification
+
+palmid can check that the person at the camera is a **claimed, enrolled person**, as the second step
+of a login after your system has checked the first factor (for example a password).
+
+**What it checks:**
+
+1. **Palm, 1:1.** The person shows an open palm; it must match *that person's* enrolled palm codes in
+   3 frames (it is compared with nobody else).
+2. **Random finger numbers.** Then, on the same hand, they show the numbers palmid asks for, in order,
+   for example "show 8, then show 10". The numbers change every time.
+3. **One hand, in view, in time.** Exactly one hand may be in view; if it leaves the view for more
+   than 1.5 seconds, or 40 seconds pass, the attempt fails.
+
+A printed palm or a photo can't do step 2, so it fails. A replayed or injected **video** of the right
+gestures could pass: this is a webcam-level check, not certified liveness detection (see §16).
+
+**Do it in the web app** (section **5 · Verify**):
+
+1. Type the person's name and press **Verify**. The steps appear in the Camera panel with a countdown;
+   each step is crossed out when done.
+2. The result shows **✔ verified** or **✖ not verified** with the reason and the tries left.
+3. **Cancel** stops an attempt; it counts as a failed one.
+
+**Lockout.** 5 failed attempts in a row lock the person's palm check for **15 minutes**. A successful
+check (palm or code) resets the count. The Gallery panel shows each person's failures and locks.
+
+**Fallback code (non-biometric).** For people whose palm doesn't work (injury, gloves, lighting) or who
+are locked out:
+
+1. Once per person: type the name and press **Set up code**. palmid shows a secret and an
+   `otpauth://` link. Add it to any authenticator app (Google Authenticator, Microsoft
+   Authenticator, Aegis, 1Password …) by typing the secret or turning the link into a QR code. It is
+   shown once.
+2. To use it: type the name and the 6-digit code from the app, press **Use code**.
+
+The code has its own limit: 5 wrong codes lock it for 15 minutes. A code works once.
+
+**Administrator tasks** (command line, from the `test1_palm` folder):
+
+```bash
+B=target/release/palmid
+A="--gallery palmid_work/palm_gallery.json --auth palmid_work/auth_state.json"
+$B $A auth-status                    # failures, locks, fallback set-up per person
+$B $A auth-unlock --name asha        # clear asha's counts and locks
+$B $A auth-setup-code --name asha    # new fallback secret (replaces the old one)
+$B $A auth-code --name asha --code 123456
+```
+
+**From another application** (same computer): `POST /v1/auth/start {"user": "asha"}` starts an
+attempt, `POST /v1/auth/status` returns the steps and progress or the last result (`last.ok`),
+`POST /v1/auth/fallback {"user": "asha", "code": "123456"}` checks a code, `POST /v1/auth/cancel` stops.
+
+Every start, result, code use, set-up and unlock is written to `palmid_work/auth_state.log.jsonl`.
+`palmid_work/auth_state.json` holds the counters and the **fallback secrets**: anyone who can read it
+can generate codes, so keep the folder private (palmid makes the file readable by your user only).
+
+## 11. Chinese finger numbers
 
 Show one hand to the camera with a number from 1 to 10. The **finger number** line in the Camera panel
 shows it once you hold it steady for about 6 of 8 frames.
@@ -225,12 +284,12 @@ Tips:
 Only hand-point coordinates are saved, in `palmid_work/finger_recordings.jsonl`. Delete that file to
 start over.
 
-## 11. Face mesh
+## 12. Face mesh
 
 Every detected face gets a mesh of 468 points joined into triangles. It is for display only; palmid
 never identifies faces. It works best with the face upright and facing the camera.
 
-## 12. Using the API
+## 13. Using the API
 
 The web app (and `palmid serve`) answers OpenAI-style requests at `/v1/chat/completions`. Send an
 image; get back what palmid sees:
@@ -246,7 +305,7 @@ The answer's `choices[0].message.content` is JSON text with one entry per object
 `bbox`, and where present `identity`, `hand` (21 points), `finger_number`, `face_mesh` (468 points).
 Send a message with no image to get the current status instead.
 
-## 13. Command line instead of the web app
+## 14. Command line instead of the web app
 
 ```bash
 cargo build --release -p palmid
@@ -276,7 +335,7 @@ $B --model palmid_work/models/palmid_int8.onnx --meta palmid_work/models/palmid_
    calibrate --data palmid_work/dataset --split cal
 ```
 
-## 14. Troubleshooting
+## 15. Troubleshooting
 
 | Problem | What to do |
 |---|---|
@@ -293,12 +352,18 @@ $B --model palmid_work/models/palmid_int8.onnx --meta palmid_work/models/palmid_
 | Enrollment refused | more light, 1280×720 capture, palm closer (§8) |
 | Hand landmarks "failed" | the first start needs internet to download the hand model; restart once online |
 | Very slow | use `--release`, set `PALMID_THREADS` to your core count, use 640×480 unless enrolling |
+| Verify: "the hand left the view" | keep one hand in the frame for the whole attempt; move slowly between numbers |
+| Verify: stuck at the palm step | the palm must match the claimed person: same hand as at enrollment, open, 25–40 cm, good light |
+| Verify: a number isn't accepted | hold it steady about 2 seconds; between two numbers, change the shape (the previous one must be let go) |
+| "locked for … seconds" | wait, use the fallback code, or an administrator runs `auth-unlock` |
+| "no fallback code is set up" | press **Set up code** for that person (or `auth-setup-code`) |
 
-## 15. Privacy and safe use
+## 16. Privacy and safe use
 
 * Enroll only people who agree, and delete them when they ask.
 * The gallery (`palm_gallery.json`) holds palm-line codes, not images. Treat it as personal data anyway.
 * The web page has **no login** and listens only on this computer (`127.0.0.1`). Don't expose it to a
   network without adding authentication.
-* There is no liveness check and accuracy on real palms hasn't been measured on a public dataset, so
-  don't use palmid to unlock doors or approve payments.
+* The second-factor check (§10) stops photos but not replayed video, and palm accuracy on real palms
+  hasn't been measured on a public dataset. Use it as one layer behind a first factor, not on its own,
+  and not for doors or payments without a certified liveness sensor.

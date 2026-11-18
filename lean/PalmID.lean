@@ -157,3 +157,58 @@ theorem stable_unique (l : List Nat) (w need a b : Nat) (hl : l.length ≤ w) (h
   intro h
   have := count_two_le l a b h
   omega
+
+/-! ## §9 Second-factor lockout (src/auth.rs `Lock`)
+
+A factor's state is (failures, lockedUntil). An attempt is allowed at time t iff t ≥ lockedUntil.
+A failure increments the count; reaching `max` resets it and locks until t + L. A success resets
+the count. Hence from any allowed state at most `max` failed attempts can happen before the factor
+locks, and once locked nothing is attempted until the lock expires. -/
+
+structure Lock where
+  failures : Nat
+  lockedUntil : Nat
+  deriving Repr
+
+def Lock.canAttempt (s : Lock) (t : Nat) : Bool := decide (s.lockedUntil ≤ t)
+
+def Lock.fail (s : Lock) (t max L : Nat) : Lock :=
+  if s.failures + 1 ≥ max then ⟨0, t + L⟩ else ⟨s.failures + 1, s.lockedUntil⟩
+
+def Lock.succeed (s : Lock) : Lock := ⟨0, s.lockedUntil⟩
+
+/-- Fail `n` times at time t. -/
+def Lock.failN (s : Lock) (t max L : Nat) : Nat → Lock
+  | 0 => s
+  | n + 1 => (s.failN t max L n).fail t max L
+
+/-- Below the limit, failures are counted one by one and the lock time is untouched. -/
+theorem failN_counts (s : Lock) (t max L n : Nat) (h : s.failures + n < max) :
+    s.failN t max L n = ⟨s.failures + n, s.lockedUntil⟩ := by
+  induction n with
+  | zero => simp [Lock.failN]
+  | succ n ih =>
+    have ih' := ih (by omega)
+    simp only [Lock.failN, ih', Lock.fail]
+    rw [if_neg (by omega)]
+    congr 1
+
+/-- The failure that reaches the limit locks the factor for L from now. -/
+theorem fail_reaching_max_locks (s : Lock) (t max L : Nat) (h : s.failures + 1 ≥ max) :
+    (s.fail t max L).lockedUntil = t + L ∧ (s.fail t max L).failures = 0 := by
+  simp [Lock.fail, h]
+
+/-- From a clear state, the `max`-th consecutive failure (max ≥ 1) locks: no attempt is allowed
+    before t + L. -/
+theorem max_failures_lock (t max L t' : Nat) (hm : 1 ≤ max) (ht : t' < t + L) :
+    (Lock.failN ⟨0, 0⟩ t max L max).canAttempt t' = false := by
+  obtain ⟨k, rfl⟩ : ∃ k, max = k + 1 := ⟨max - 1, by omega⟩
+  have hk := failN_counts ⟨0, 0⟩ t (k + 1) L k (by simp)
+  simp only [Lock.failN, hk, Lock.fail]
+  rw [if_pos (by simp)]
+  simp [Lock.canAttempt]
+  omega
+
+/-- A success clears the count without lifting an active lock. -/
+theorem succeed_keeps_lock (s : Lock) (t : Nat) : s.succeed.canAttempt t = s.canAttempt t := by
+  simp [Lock.succeed, Lock.canAttempt]

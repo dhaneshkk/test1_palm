@@ -54,6 +54,7 @@ impl Config {
     pub fn meta(&self) -> PathBuf { self.models().join("palmid_model.json") }
     pub fn gallery(&self) -> PathBuf { self.work.join("palm_gallery.json") }
     pub fn finger_recordings(&self) -> PathBuf { self.work.join("finger_recordings.jsonl") }
+    pub fn auth(&self) -> PathBuf { self.work.join("auth_state.json") }
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -124,6 +125,16 @@ pub struct FingerRecStatus {
     pub report: Option<palmid::fingernum::FingerReport>,
 }
 
+/// Second factor: the session in progress, the last result and per-person lock state.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct AuthStatus {
+    pub session: Option<palmid::auth::Session>,
+    pub seconds_left: u64,
+    pub last: Option<palmid::auth::AuthResult>,
+    /// (name, palm failures, palm locked for s, fallback set up, fallback locked for s)
+    pub people: Vec<(String, u32, u64, bool, u64)>,
+}
+
 /// Frames with a hand captured per "Record" press (about 3–6 s at the usual frame rates).
 pub const FINGER_REC_FRAMES: usize = 60;
 
@@ -160,6 +171,7 @@ pub struct Status {
     /// Chinese finger number held steady (≥ 6 of the last 8 frames) by the most confident hand
     pub finger_number: Option<u8>,
     pub finger_rec: FingerRecStatus,
+    pub auth: AuthStatus,
     pub people: Vec<Person>,
 }
 
@@ -245,6 +257,8 @@ pub struct Inner {
     frame_tx: watch::Sender<u64>,
     job: Mutex<Option<tokio::task::AbortHandle>>,
     child_pid: Mutex<Option<u32>>,
+    auth: Mutex<palmid::auth::AuthStore>,
+    session: Mutex<Option<palmid::auth::Session>>,
 }
 
 /// Router-shared handle (`context::<App>(cx)`).
@@ -276,7 +290,10 @@ impl App {
         } else {
             None
         };
+        let auth = palmid::auth::AuthStore::open(&cfg.auth(), palmid::auth::Policy::default())?;
         let app = App(Arc::new(Inner {
+            auth: Mutex::new(auth),
+            session: Mutex::new(None),
             rt: Mutex::new(Runtime { det, coder: PalmCoder::new(PalmParams::default()), gallery, debounce: Debounce::default(), hand: None, mesh: None, track: None }),
             cfg,
             status: Mutex::new(status),
@@ -290,6 +307,7 @@ impl App {
         }));
         app.refresh_people();
         app.load_finger_counts();
+        app.refresh_auth();
         app.spawn_hand_model();
         app.spawn_face_model();
         Ok(app)
@@ -329,6 +347,100 @@ impl App {
             }
             Err(e) => app.update(|s| s.face_model = Some(format!("failed: {e:#}"))),
         });
+    }
+
+    // ── second factor ──────────────────────────────────────────────────────────
+    fn refresh_auth(&self) {
+        let now = palmid::auth::now_secs();
+        let people: Vec<_> = lock(&self.0.auth).users().iter().map(|(n, u)| {
+            (n.clone(), u.palm.failures, u.palm.locked_until.saturating_sub(now), u.totp_secret.is_some(), u.fallback.locked_until.saturating_sub(now))
+        }).collect();
+        self.update(|s| s.auth.people = people);
+    }
+
+    /// Start a palm second-factor session for a claimed, enrolled user (1:1 + finger challenge).
+    pub fn start_verify(&self, user: &str) -> Result<String> {
+        let user = user.trim();
+        anyhow::ensure!(lock(&self.0.rt).gallery.people.contains_key(user), "{user:?} is not enrolled");
+        anyhow::ensure!(lock(&self.0.rt).hand.is_some(), "the hand-landmark model is not loaded yet");
+        anyhow::ensure!(matches!(*lock(&self.0.mode), Mode::Infer), "the camera is busy (collecting or enrolling)");
+        let mut sess = lock(&self.0.session);
+        anyhow::ensure!(sess.is_none(), "a verification is already running");
+        lock(&self.0.auth).check_palm_allowed(user, palmid::auth::now_secs())?;
+        let s = palmid::auth::Session::new(user, lock(&self.0.auth).policy.clone());
+        let steps = s.steps.iter().map(|x| x.label()).collect::<Vec<_>>().join(", then ");
+        lock(&self.0.auth).audit(user, "palm_start", &steps);
+        *sess = Some(s.clone());
+        drop(sess);
+        self.update(|st| { st.auth.session = Some(s); st.auth.last = None; });
+        Ok(format!("{user}: {steps} — one hand, keep it in view"))
+    }
+
+    /// Feed one camera frame to the running session; record the result when it ends.
+    fn auth_frame(&self, objects: &[ObjectResult], held: Option<u8>) -> Result<()> {
+        let mut g = lock(&self.0.session);
+        let Some(sess) = g.as_mut() else { return Ok(()) };
+        let hands: Vec<&ObjectResult> = objects.iter().filter(|o| o.hand.is_some()).collect();
+        // exactly one hand: a second hand in view could stand in for parts of the challenge
+        let obs = match hands.as_slice() {
+            [] => palmid::auth::Observation::default(),
+            [o] => palmid::auth::Observation {
+                hand: true,
+                held,
+                palm_match: o.candidates.as_deref().and_then(|c| palmid::auth::palm_match(c, &sess.user)),
+            },
+            _ => palmid::auth::Observation { hand: true, held: None, palm_match: None },
+        };
+        let outcome = sess.observe(obs).clone();
+        let (snapshot, left) = (sess.clone(), sess.seconds_left());
+        let finished = outcome != palmid::auth::Outcome::Running;
+        if finished {
+            *g = None;
+        }
+        drop(g);
+        if finished {
+            let (ok, reason) = match outcome {
+                palmid::auth::Outcome::Passed => (true, "palm matched and challenge completed".to_string()),
+                palmid::auth::Outcome::Failed(r) => (false, r),
+                palmid::auth::Outcome::Running => unreachable!(),
+            };
+            let r = lock(&self.0.auth).record_palm(&snapshot.user, ok, &reason)?;
+            self.update(|s| { s.auth.session = None; s.auth.last = Some(r); });
+            self.refresh_auth();
+        } else {
+            self.update(|s| { s.auth.session = Some(snapshot); s.auth.seconds_left = left; });
+        }
+        Ok(())
+    }
+
+    pub fn cancel_verify(&self) -> Result<String> {
+        let Some(s) = lock(&self.0.session).take() else { return Ok("no verification running".into()) };
+        let r = lock(&self.0.auth).record_palm(&s.user, false, "cancelled")?;
+        self.update(|st| { st.auth.session = None; st.auth.last = Some(r); });
+        self.refresh_auth();
+        Ok("cancelled (counts as a failed attempt)".into())
+    }
+
+    /// Non-biometric fallback: 6-digit code from the person's authenticator app.
+    pub fn fallback_code(&self, user: &str, code: &str) -> Result<String> {
+        let r = lock(&self.0.auth).fallback(user.trim(), code)?;
+        let msg = if r.ok { format!("{}: verified by fallback code", r.user) } else { format!("{}: {} ({} tries left)", r.user, r.reason, r.attempts_left) };
+        self.update(|s| s.auth.last = Some(r));
+        self.refresh_auth();
+        Ok(msg)
+    }
+
+    /// Create (or replace) a person's fallback code; returns the secret and otpauth:// URI.
+    pub fn setup_code(&self, user: &str) -> Result<String> {
+        let user = user.trim();
+        anyhow::ensure!(lock(&self.0.rt).gallery.people.contains_key(user), "{user:?} is not enrolled");
+        let (secret, uri) = lock(&self.0.auth).totp_setup(user, "palmid")?;
+        self.refresh_auth();
+        Ok(format!("{user}: add this to an authenticator app — secret {secret} — or open {uri}. Shown once; keep it private."))
+    }
+
+    pub fn auth_snapshot(&self) -> AuthStatus {
+        lock(&self.0.status).auth.clone()
     }
 
     // ── finger-number recordings ───────────────────────────────────────────────
@@ -434,6 +546,7 @@ impl App {
             let (objects, boxes) = self.step(&rgb, &gray)?;
             let best = objects.iter().filter(|o| o.hand.is_some()).max_by(|a, b| a.hand.as_ref().unwrap().confidence.total_cmp(&b.hand.as_ref().unwrap().confidence));
             let held = fingers.push(best.and_then(|o| o.finger_number.as_ref()).map(|f| f.value));
+            self.auth_frame(&objects, held)?;
             let rec = lock(&self.0.status).finger_rec.active; // guard dropped here: record_finger_frame locks status again
             if let (Some((label, _)), Some(h)) = (rec, best.and_then(|o| o.hand.as_ref())) {
                 self.record_finger_frame(label, h, n)?;
@@ -631,7 +744,9 @@ impl App {
 
     pub fn delete_person(&self, name: &str) -> Result<bool> {
         let had = lock(&self.0.rt).gallery.delete(name)?;
+        lock(&self.0.auth).remove(name)?;
         self.refresh_people();
+        self.refresh_auth();
         Ok(had)
     }
 

@@ -1137,11 +1137,14 @@ dependencies = [
  "base64",
  "clap",
  "futures-util",
+ "getrandom 0.2.17",
+ "hmac",
  "image",
  "ndarray",
  "ort",
  "serde",
  "serde_json",
+ "sha1",
  "tokio",
 ]
 

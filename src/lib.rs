@@ -7,6 +7,7 @@
 //! Every decision function that has a Lean 4 theorem lives in [`lean_mirror`] and is
 //! property-tested against the theorem statements (see `lean/PalmID.lean`).
 
+pub mod auth;
 pub mod detector;
 pub mod gallery;
 pub mod facemesh;

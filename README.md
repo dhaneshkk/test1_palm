@@ -46,6 +46,7 @@ the teachers and YOLOX-Nano is trained on the grayscale copies. Everything at ru
 | **Gallery** | CompCode orientation codes (one digit 0–5 per cell), never images; delete a person at any time | — |
 | **Hand landmarks** | 21 points per palm, hand skeleton on the live view, and a palm crop aligned to the hand for enrollment and matching | hand assumed roughly upright |
 | **Finger numbers** | Chinese one-hand numbers 1–10 from the landmarks, held for 6 of 8 frames before shown; follows a hand by landmarks when the detector drops it (fists, pinches) | 6–9 not yet measured on labelled real hands (the web app can record and score them) |
+| **Second factor** | verifies a **claimed** person: open palm matched 1:1, then a random Chinese finger-number challenge ("show 8, then 10") on the same tracked hand within 40 s; 5 failures lock the palm factor for 15 min; TOTP code (RFC 6238, any authenticator app) as the non-biometric fallback with its own 5-try lock; audit log | stops photos, **not** replayed or injected video: not certified liveness; use behind a first factor |
 | **Safety gate** | refuses enrollment when a person's palm samples aren't clearly more alike than random palms (shuffled-code distance − 0.06), because any threshold would then accept everyone | — |
 
 Details:
@@ -191,6 +192,9 @@ $B detect some.jpg other.png
 $B calibrate --data path/to/yolo_data --split cal               # re-derive per-class τ, rewrites --meta
 $B eval --data path/to/yolo_data --split val                    # frame-level MCC per class
 $B fingers-eval palmid_work/finger_recordings.jsonl             # score labelled finger-number recordings
+$B --auth palmid_work/auth_state.json auth-status                # second factor: counts, locks, fallback
+$B --gallery palmid_work/palm_gallery.json --auth palmid_work/auth_state.json auth-setup-code --name asha
+$B --auth palmid_work/auth_state.json auth-unlock --name asha    # administrator unlock
 ```
 
 The CLI reads `models/palmid_int8.onnx`, `models/palmid_model.json` and `palm_gallery.json` by
@@ -219,7 +223,11 @@ curl -s localhost:8361/v1/chat/completions -H 'content-type: application/json' -
 `choices[0].message.content` is a JSON string: per object `class`, `score`, `bbox`; for palms
 `identity` (`name` / `unknown` / `pending` until 3 of the last 6 frames agree) with per-person
 distances, `hand` (21 landmarks) and `finger_number` (value, rule, extended fingers); for faces
-`face_mesh` (468 points and presence). A request with no image returns the current status (phase, model, enrolled names, metrics).
+`face_mesh` (468 points and presence).
+
+Second factor (web app): `POST /v1/auth/start {"user": …}`, `POST /v1/auth/status`,
+`POST /v1/auth/fallback {"user": …, "code": "123456"}`, `POST /v1/auth/cancel`. See the
+[user guide §10](USER_GUIDE.md#10-second-factor-verification). A request with no image returns the current status (phase, model, enrolled names, metrics).
 
 ## Training without the web app
 
@@ -247,7 +255,7 @@ boxes. Use more frames and epochs, a smaller batch, or a GPU.
 
 | Path | Contents |
 |---|---|
-| `src/` | `palmid` library and CLI: preprocessing, detector, teachers, palmprint, gallery, hand landmarks, finger numbers, face mesh + Delaunay, metrics, dataset writer, camera, API server, Lean mirrors |
+| `src/` | `palmid` library and CLI: preprocessing, detector, teachers, palmprint, gallery, hand landmarks, finger numbers, second-factor auth (TOTP, lockout, challenge), face mesh + Delaunay, metrics, dataset writer, camera, API server, Lean mirrors |
 | `web/` | `palmid-web` Topcoat app (state, camera loop, training job, UI, API) |
 | `trainer/` | `train_student.py` (SAM YOLOX-Nano trainer) and `requirements.txt` |
 | `notebooks/` | original single-cell Colab notebook |
@@ -261,7 +269,7 @@ boxes. Use more frames and epochs, a smaller batch, or a GPU.
 
 ## Formal guarantees and tests
 
-`lean/PalmID.lean`: 25 theorems, Lean 4.31, kernel only (Nat/Int + `omega`, no Mathlib, no `sorry`):
+`lean/PalmID.lean`: 29 theorems, Lean 4.31, kernel only (Nat/Int + `omega`, no Mathlib, no `sorry`):
 
 | § | Theorems | Used by |
 |---|---|---|
@@ -273,6 +281,7 @@ boxes. Use more frames and epochs, a smaller batch, or a GPU.
 | 6 | `swap_requires_calibrated`, `training_requires_data`, `no_skip_calibration`, `collection_waits_for_training`, `no_self_loops` | web-app job phases |
 | 7 | `crop_contains_box`, `crop_margin` | face-mesh crop always contains the face box, with ≥ ⌊m/4⌋ − 1 px context per side |
 | 8 | `countEq_cons`, `count_two_le`, `stable_unique` | finger-number stabiliser: with window < 2·need, at most one number can be reported |
+| 9 | `failN_counts`, `fail_reaching_max_locks`, `max_failures_lock`, `succeed_keeps_lock` | second-factor lockout: failures are counted one by one, the 5th locks the factor for L, nothing is attempted before it expires, a success doesn't lift a lock |
 
 `src/lean_mirror.rs` holds the integer mirrors the runtime actually calls, with exhaustive or
 brute-force checks of each theorem statement.
@@ -321,6 +330,10 @@ reference fixtures on the runner first, because INT8 kernels differ across CPUs 
 * **MCC is measured against the colour teachers' labels**, not human ground truth. It shows `n/a` when
   the val split has no frames without the class (or none with it); MCC is undefined then. Spend part
   of **Collect** with no face or palm in view.
+* **The second factor is a webcam layer, not certified liveness.** The finger-number challenge defeats
+  photos and printouts; a replayed or injected video can defeat it. NIST SP 800-63B-4 expects
+  presentation-attack detection and a false match rate of 1 in 10 000 or better for biometric
+  factors; neither is demonstrated here. For that, add a certified palm-vein sensor.
 * **Finger numbers 6–9 are unverified on real hands**, and every hand-based feature assumes a roughly
   upright hand (the landmark model's crop has no rotation).
 * **The web UI has no login.** It binds to `127.0.0.1` by default. Keep it that way or put it behind

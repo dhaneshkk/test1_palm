@@ -65,3 +65,40 @@ async fn chat(cx: &Cx, Json(body): Json<Value>) -> Result<Json<Value>> {
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     })))
 }
+
+// ── second factor (for an application that already checked the first factor) ───
+
+fn auth_reply(app: &App, r: anyhow::Result<String>) -> Json<Value> {
+    let a = app.auth_snapshot();
+    Json(match r {
+        Ok(m) => json!({"ok": true, "message": m, "session": a.session, "seconds_left": a.seconds_left, "last": a.last}),
+        Err(e) => json!({"ok": false, "error": format!("{e:#}"), "last": a.last}),
+    })
+}
+
+/// {"user": name} → starts a palm session; the person then performs it at this computer's camera.
+#[route(POST "/v1/auth/start")]
+async fn auth_start(cx: &Cx, Json(body): Json<Value>) -> Result<Json<Value>> {
+    let app = context::<App>(cx);
+    Ok(auth_reply(app, app.start_verify(body["user"].as_str().unwrap_or(""))))
+}
+
+/// Poll: the running session (steps, progress) or the last result.
+#[route(POST "/v1/auth/status")]
+async fn auth_status(cx: &Cx) -> Result<Json<Value>> {
+    let app = context::<App>(cx);
+    Ok(auth_reply(app, Ok(String::new())))
+}
+
+/// {"user": name, "code": "123456"} → non-biometric fallback (TOTP).
+#[route(POST "/v1/auth/fallback")]
+async fn auth_fallback(cx: &Cx, Json(body): Json<Value>) -> Result<Json<Value>> {
+    let app = context::<App>(cx);
+    Ok(auth_reply(app, app.fallback_code(body["user"].as_str().unwrap_or(""), body["code"].as_str().unwrap_or(""))))
+}
+
+#[route(POST "/v1/auth/cancel")]
+async fn auth_cancel(cx: &Cx) -> Result<Json<Value>> {
+    let app = context::<App>(cx);
+    Ok(auth_reply(app, app.cancel_verify()))
+}

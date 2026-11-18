@@ -38,3 +38,7 @@ th { color: var(--dim); font-weight: 500; }
 .err { color: var(--err); }
 footer { color: var(--dim); font-size: 12px; padding: 8px 20px 20px; }
 .fingernum { font-size: 1.6em; }
+.authbox { border: 1px solid var(--accent, #d4b04a); border-radius: 6px; padding: 6px 10px; margin: 8px 0; }
+ol.steps { margin: 4px 0 2px 18px; padding: 0; }
+ol.steps li.done { color: var(--ok); text-decoration: line-through; }
+ol.steps li.now { font-weight: 600; }

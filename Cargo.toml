@@ -30,6 +30,10 @@ base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# second factor: OS randomness for challenges and secrets, HMAC-SHA1 for TOTP (RFC 6238)
+getrandom = "0.2"
+hmac = "0.12"
+sha1 = "0.10"
 
 [profile.release]
 opt-level = 3

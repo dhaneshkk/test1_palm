@@ -62,6 +62,26 @@ async fn score_fingers(cx: &Cx) -> Result<String> {
     report(context::<App>(cx).score_finger_recordings())
 }
 
+#[procedure]
+async fn verify(cx: &Cx, name: String) -> Result<String> {
+    report(context::<App>(cx).start_verify(&name))
+}
+
+#[procedure]
+async fn cancel_verify(cx: &Cx) -> Result<String> {
+    report(context::<App>(cx).cancel_verify())
+}
+
+#[procedure]
+async fn use_code(cx: &Cx, name: String, code: String) -> Result<String> {
+    report(context::<App>(cx).fallback_code(&name, &code))
+}
+
+#[procedure]
+async fn setup_code(cx: &Cx, name: String) -> Result<String> {
+    report(context::<App>(cx).setup_code(&name))
+}
+
 // ── stylesheet (served as a route so CSS needs no escaping) ───────────────────
 pub struct Css;
 impl IntoResponse for Css {
@@ -118,6 +138,8 @@ async fn controls(cx: &Cx) -> Result<impl View> {
     let forget_name = signal(cx, String::new);
     let msg = signal(cx, String::new);
     let finger = signal(cx, || "1".to_string());
+    let who = signal(cx, String::new);
+    let code = signal(cx, String::new);
     Ok(view! {
                         <div class="card controls">
                             <h2>"1 · Collect"</h2>
@@ -144,6 +166,16 @@ async fn controls(cx: &Cx) -> Result<impl View> {
                             <label>"number " <input size="3" :value=$(finger.get()) @input=$(|e: Event| finger.set(e.target.value))></label>
                             <button @click=$(async |_e| { let m = record_finger(finger.get()).await; msg.set(m); })>"Record"</button>
                             <button class="ghost" @click=$(async |_e| { let m = score_fingers().await; msg.set(m); })>"Score"</button>
+
+                            <h2>"5 · Verify (second factor)"</h2>
+                            <p class="hint">"Checks a claimed person 1:1: their open palm must match, then they show the random finger numbers on the same hand within 40 s. Stops printed photos, not replayed or injected video. 5 failures lock the palm factor for 15 minutes; the 6-digit code from an authenticator app is the fallback (its own 5-try limit)."</p>
+                            <label>"name " <input size="14" :value=$(who.get()) @input=$(|e: Event| who.set(e.target.value))></label>
+                            <button @click=$(async |_e| { let m = verify(who.get()).await; msg.set(m); })>"Verify"</button>
+                            <button class="ghost" @click=$(async |_e| { let m = cancel_verify().await; msg.set(m); })>"Cancel"</button>
+                            <br>
+                            <label>"code " <input size="7" :value=$(code.get()) @input=$(|e: Event| code.set(e.target.value))></label>
+                            <button class="ghost" @click=$(async |_e| { let m = use_code(who.get(), code.get()).await; msg.set(m); })>"Use code"</button>
+                            <button class="ghost" @click=$(async |_e| { let m = setup_code(who.get()).await; msg.set(m); })>"Set up code"</button>
                             <p class="msg">$(msg.get())</p>
                         </div>
     })
@@ -231,6 +263,25 @@ async fn status_panels(cx: &Cx, s: Status) -> Result<impl View> {
                 <span>"face mesh"</span><b>(s.face_model.clone().unwrap_or_else(|| "—".into()))</b>
                 <span>"finger number"</span><b class="fingernum">(s.finger_number.map(|v| v.to_string()).unwrap_or_else(|| "—".into()))</b>
             </div>
+            if let Some(a) = &s.auth.session {
+                <div class="authbox">
+                    <p><b>"verifying " (a.user.clone())</b> " · " (s.auth.seconds_left) " s left"</p>
+                    <ol class="steps">
+                        for (i, st) in a.steps.iter().enumerate() {
+                            <li class=(if i < a.at { "done" } else if i == a.at { "now" } else { "" })>(st.label())
+                                if i == 0 && i == a.at { " (" (a.palm_hits) "/3 matching frames)" }</li>
+                        }
+                    </ol>
+                </div>
+            }
+            if let Some(r) = &s.auth.last {
+                if r.ok {
+                    <p class="ok">"✔ " (r.user.clone()) " verified · " (r.method.clone())</p>
+                } else {
+                    <p class="err">"✖ " (r.user.clone()) " not verified (" (r.method.clone()) "): " (r.reason.clone()) " · "
+                        (if let Some(_) = r.locked_until { "factor locked for 15 minutes".to_string() } else { format!("{} tries left", r.attempts_left) })</p>
+                }
+            }
             if let Some((l, left)) = s.finger_rec.active { <p class="hint">"recording “" (l) "”: " (left) " frames to go"</p> }
             if s.finger_rec.counts.iter().any(|&c| c > 0) {
                 <p class="hint">"recorded: " (fr_counts.clone())</p>
@@ -306,6 +357,15 @@ async fn status_panels(cx: &Cx, s: Status) -> Result<impl View> {
                 } else {
                     <p class="err">(n.clone()) ": not enrolled — " (o.reason.clone().unwrap_or_default()) " (τ " (format!("{:.3}", o.tau)) ", chance " (format!("{:.3}", o.chance)) ")"</p>
                 }
+            }
+            if !s.auth.people.is_empty() {
+                <table>
+                    <tr><th>"second factor"</th><th>"palm failures"</th><th>"palm lock"</th><th>"fallback code"</th></tr>
+                    for (n, f, pl, has, fl) in &s.auth.people {
+                        <tr><td>(n.clone())</td><td>(f) "/5"</td><td>(if *pl > 0 { format!("{} min", pl.div_ceil(60)) } else { "—".into() })</td>
+                            <td>(if !*has { "not set up".to_string() } else if *fl > 0 { format!("locked {} min", fl.div_ceil(60)) } else { "set up".to_string() })</td></tr>
+                    }
+                </table>
             }
             if s.people.is_empty() {
                 <p class="hint">"nobody enrolled; unenrolled palms show as unknown"</p>

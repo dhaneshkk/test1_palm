@@ -23,6 +23,9 @@ struct Cli {
     /// Gallery of enrolled palm codes (JSON, codes only — no images)
     #[arg(long, global = true, default_value = "palm_gallery.json")]
     gallery: PathBuf,
+    /// second-factor state (lockouts, TOTP secrets); the audit log is written next to it
+    #[arg(long, global = true, default_value = "auth_state.json")]
+    auth: PathBuf,
     #[arg(long, global = true, default_value_t = 4)]
     threads: usize,
     #[command(subcommand)]
@@ -59,6 +62,15 @@ enum Cmd {
     /// Score Chinese finger-number rules on labelled recordings (JSON lines {label, points}, as the
     /// web app's "Record" button writes them): accuracy, per-number and multiclass MCC
     FingersEval { recordings: PathBuf },
+    /// Second factor: create (or replace) a person's fallback TOTP code; prints the secret and an
+    /// otpauth:// URI for any authenticator app
+    AuthSetupCode { #[arg(long)] name: String },
+    /// Second factor: check a fallback code (6 digits) for a person
+    AuthCode { #[arg(long)] name: String, #[arg(long)] code: String },
+    /// Second factor (administrator): clear a person's failure counts and locks
+    AuthUnlock { #[arg(long)] name: String },
+    /// Second factor: failure counts, locks and fallback set-up per person
+    AuthStatus,
     /// Recalibrate per-class τ (Mondrian split-conformal) on a YOLO-format split and rewrite --meta
     Calibrate { #[arg(long)] data: PathBuf, #[arg(long, default_value = "cal")] split: String, #[arg(long, default_value_t = 0.30)] fallback: f32 },
     /// Frame-level MCC per class on a YOLO-format split
@@ -164,6 +176,34 @@ async fn main() -> Result<()> {
         Cmd::Delete { name } => {
             let mut g = Gallery::open(&cli.gallery, GalleryConfig::default())?;
             println!("{}", if g.delete(name)? { format!("deleted {name}") } else { format!("{name} not enrolled") });
+        }
+        Cmd::AuthSetupCode { name } => {
+            let g = Gallery::open(&cli.gallery, GalleryConfig::default())?;
+            anyhow::ensure!(g.people.contains_key(name.as_str()), "{name} is not enrolled");
+            let (secret, uri) = palmid::auth::AuthStore::open(&cli.auth, Default::default())?.totp_setup(name, "palmid")?;
+            println!("secret {secret}\nuri    {uri}\nAdd it to an authenticator app (scan the URI as a QR code or type the secret). Keep it private.");
+            return Ok(());
+        }
+        Cmd::AuthCode { name, code } => {
+            let r = palmid::auth::AuthStore::open(&cli.auth, Default::default())?.fallback(name, code)?;
+            println!("{}", serde_json::to_string_pretty(&r)?);
+            return Ok(());
+        }
+        Cmd::AuthUnlock { name } => {
+            let ok = palmid::auth::AuthStore::open(&cli.auth, Default::default())?.unlock(name)?;
+            println!("{}", if ok { format!("unlocked {name}") } else { format!("{name} has no second-factor state") });
+            return Ok(());
+        }
+        Cmd::AuthStatus => {
+            let st = palmid::auth::AuthStore::open(&cli.auth, Default::default())?;
+            let now = palmid::auth::now_secs();
+            for (n, u) in st.users() {
+                println!("{n}: palm failures {} {} · fallback {} failures {} {}", u.palm.failures,
+                    if u.palm.can_attempt(now) { "".to_string() } else { format!("(locked {} s)", u.palm.locked_until - now) },
+                    if u.totp_secret.is_some() { "set up," } else { "not set up," }, u.fallback.failures,
+                    if u.fallback.can_attempt(now) { "".to_string() } else { format!("(locked {} s)", u.fallback.locked_until - now) });
+            }
+            return Ok(());
         }
         Cmd::FingersEval { recordings } => {
             let recs = palmid::fingernum::read_recordings(recordings)?;
